@@ -1,0 +1,16 @@
+# downloaded build tools and build output
+.tools/
+build/
+
+# editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# signing secrets (see README: keystore.properties)
+keystore.properties
+*.jks
+*.keystore
+testdata/

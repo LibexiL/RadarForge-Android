@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="rf_window">#26272d</color>
+    <color name="rf_panel">#1e1f24</color>
+    <color name="rf_accent">#3c6ec8</color>
+    <color name="rf_text">#e1e1e6</color>
+    <color name="rf_dim">#8d909b</color>
+    <color name="rf_icon_bg">#101116</color>
+</resources>

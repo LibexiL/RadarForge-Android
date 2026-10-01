@@ -1,0 +1,124 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>GL check</title>
+<style>body{margin:0;background:#111}canvas{display:block}#lab{position:absolute;left:0;top:0}</style></head>
+<body><canvas id="c"></canvas><canvas id="lab"></canvas>
+<script>
+// Renders an exported scene with the app's own GLSL ES 3.00 shaders (WebGL2 == OpenGL ES 3.0 shading language).
+const q = new URLSearchParams(location.search);
+const scene = q.get("scene");
+const W = +(q.get("w") || 1200), H = +(q.get("h") || 1200);
+const cx = +(q.get("cx") || 0), cy = +(q.get("cy") || 0), scale = +(q.get("scale") || 1.0);
+const cv = document.getElementById("c"); cv.width = W; cv.height = H;
+const lab = document.getElementById("lab"); lab.width = W; lab.height = H;
+const gl = cv.getContext("webgl2", {antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: true});
+const errors = [];
+window.result = null;
+
+async function bin(name) { const r = await fetch(scene + name); if (!r.ok) throw new Error(name + " " + r.status); return await r.arrayBuffer(); }
+async function text(path) { const r = await fetch(path); return await r.text(); }
+
+function prog(vs, fs, name) {
+  function sh(type, src) {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) errors.push(name + ": " + gl.getShaderInfoLog(s));
+    return s;
+  }
+  const p = gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) errors.push(name + " link: " + gl.getProgramInfoLog(p));
+  return p;
+}
+
+(async () => {
+  try {
+    const S = "/app/assets/shaders/";
+    const radarP = prog(await text(S + "radar.vert"), await text(S + "radar.frag"), "radar");
+    const lineP = prog(await text(S + "line.vert"), await text(S + "line.frag"), "line");
+    if (errors.length) throw new Error(errors.join("\n"));
+    const sc = JSON.parse(await text(scene + "scene.json"));
+    const n = sc.panels.length;
+    const cols = n > 1 ? 2 : 1, rows = Math.ceil(n / cols);
+    const pw = Math.floor(W / cols), ph = Math.floor(H / rows);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.enable(gl.SCISSOR_TEST);
+
+    // line resources
+    const cornerBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cornerBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(sc.corners), gl.STATIC_DRAW);
+    const layers = [];
+    for (const L of sc.layers) {
+      const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+      gl.bufferData(gl.ARRAY_BUFFER, await bin("layer_" + L.name + ".bin"), gl.STATIC_DRAW);
+      layers.push({...L, buf: b});
+    }
+    const ringsData = await bin("rings.bin");
+    const ringBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, ringBuf); gl.bufferData(gl.ARRAY_BUFFER, ringsData, gl.STATIC_DRAW);
+    layers.unshift({name: "rings", color: [0.78, 0.78, 0.84, 0.59], width: 1.0, points: ringsData.byteLength / 8, buf: ringBuf});
+    const lineVao = gl.createVertexArray();
+
+    function drawLines(L, vp) {
+      gl.useProgram(lineP);
+      gl.bindVertexArray(lineVao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, cornerBuf);
+      gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 8, 0); gl.vertexAttribDivisor(2, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, L.buf);
+      gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0); gl.vertexAttribDivisor(0, 1);
+      gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 8, 8); gl.vertexAttribDivisor(1, 1);
+      gl.uniform2f(gl.getUniformLocation(lineP, "u_center"), cx, cy);
+      gl.uniform1f(gl.getUniformLocation(lineP, "u_scale"), scale);
+      gl.uniform2f(gl.getUniformLocation(lineP, "u_vp"), vp[2], vp[3]);
+      gl.uniform1f(gl.getUniformLocation(lineP, "u_width"), L.width * 1.5);
+      gl.uniform4fv(gl.getUniformLocation(lineP, "u_color"), L.color);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, L.points - 1);
+    }
+
+    const ctx = lab.getContext("2d");
+    for (let i = 0; i < n; i++) {
+      const P = sc.panels[i];
+      const vp = [(i % cols) * pw, H - (Math.floor(i / cols) + 1) * ph, pw, ph];
+      gl.viewport(...vp); gl.scissor(vp[0] + 1, vp[1] + 1, vp[2] - 2, vp[3] - 2);
+      gl.clearColor(8 / 255, 8 / 255, 12 / 255, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+      // radar
+      const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+      const mb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, mb);
+      const mesh = await bin("mesh" + i + ".bin");
+      gl.bufferData(gl.ARRAY_BUFFER, mesh, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 20, 0);
+      gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 20, 8);
+      gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 20, 12);
+      const tex = gl.createTexture(); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex);
+      const codes = await bin("codes" + i + ".bin");
+      if (P.bits === 8) gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8UI, P.nGates, P.nRays, 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, new Uint8Array(codes));
+      else gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16UI, P.nGates, P.nRays, 0, gl.RED_INTEGER, gl.UNSIGNED_SHORT, new Uint16Array(codes));
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const lt = gl.createTexture(); gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, lt);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1024, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(await bin("lut" + i + ".bin")));
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.useProgram(radarP);
+      const u = (k) => gl.getUniformLocation(radarP, k);
+      gl.uniform1i(u("u_data"), 0); gl.uniform1i(u("u_lut"), 1);
+      gl.uniform2f(u("u_center"), cx, cy); gl.uniform1f(u("u_scale"), scale); gl.uniform2f(u("u_vp"), vp[2], vp[3]);
+      gl.uniform1f(u("u_first"), P.first); gl.uniform1f(u("u_spacing"), P.spacing); gl.uniform1f(u("u_elev"), P.elev);
+      gl.uniform1i(u("u_ngates"), P.nGates); gl.uniform1i(u("u_nrays"), P.nRays);
+      gl.uniform1f(u("u_cscale"), P.cscale); gl.uniform1f(u("u_coffset"), P.coffset);
+      gl.uniform1f(u("u_dscale"), P.dscale); gl.uniform1f(u("u_doffset"), P.doffset);
+      gl.uniform1f(u("u_lutmin"), P.lutMin); gl.uniform1f(u("u_lutmax"), P.lutMax);
+      gl.uniform4fv(u("u_rf"), P.rf); gl.uniform1i(u("u_smooth"), P.smooth); gl.uniform1f(u("u_nyq"), P.nyq);
+      gl.uniform2fv(u("u_storm"), P.storm);
+      gl.drawArrays(gl.TRIANGLES, 0, mesh.byteLength / 20);
+      // map on top
+      for (const L of layers) drawLines(L, vp);
+      ctx.font = "bold 18px sans-serif"; ctx.fillStyle = "#fff";
+      ctx.fillText(P.label, (i % cols) * pw + 10, Math.floor(i / cols) * ph + 24);
+    }
+    const e = gl.getError();
+    window.result = {ok: e === 0 && errors.length === 0, glError: e, errors};
+  } catch (ex) {
+    window.result = {ok: false, errors: [String(ex.stack || ex)].concat(errors)};
+  }
+})();
+</script></body></html>

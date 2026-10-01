@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.RadarForge" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/rf_window</item>
+        <item name="android:colorBackground">@color/rf_window</item>
+        <item name="android:statusBarColor">@color/rf_panel</item>
+        <item name="android:navigationBarColor">@color/rf_panel</item>
+        <item name="android:colorAccent">@color/rf_accent</item>
+        <item name="android:colorPrimary">@color/rf_panel</item>
+        <item name="android:colorPrimaryDark">@color/rf_panel</item>
+        <item name="android:textColorPrimary">@color/rf_text</item>
+        <item name="android:textColorSecondary">@color/rf_dim</item>
+        <item name="android:textColorHint">@color/rf_dim</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
