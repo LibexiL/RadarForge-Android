@@ -11,6 +11,7 @@ class LayerDraw(
     val widthPx: Float,
     val maxViewKm: Float = Float.MAX_VALUE,     // hidden when the view is wider than this
     val halo: Boolean = false,                  // dark outline underneath (warnings)
+    val innerPx: Float = 0f,                    // black centre stripe ("center" / "double" warning lines)
 )
 
 class PanelDraw(val field: Field?, val table: ColorTable, val smooth: Boolean)

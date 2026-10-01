@@ -4,6 +4,7 @@ package com.libexil.radarforge.core
 class Alert(
     val id: String,
     val event: String,
+    val variant: String,              // warning-line code: TOR, TORR, TORP, TORE, SVR, SVRC, SVRD, FFW...
     val style: Alerts.Style,
     val rings: List<FloatArray>,      // lon,lat pairs
     val sentMs: Long,
@@ -29,6 +30,7 @@ class Alert(
     }
 
     val isWatch: Boolean get() = event.endsWith("Watch")
+    val variantLabel: String get() = Alerts.VARIANTS[variant]?.label ?: event
 
     /** Point-in-polygon (any ring). */
     fun contains(lat: Double, lon: Double): Boolean {
@@ -73,6 +75,76 @@ object Alerts {
         "Tornado Watch" to rgb(0xff, 0xff, 0x00),
         "Severe Thunderstorm Watch" to rgb(0xdb, 0x70, 0x93),
     )
+
+    /** How one warning line is drawn: colour (0xAARRGGBB), width (dp) and kind. */
+    class Line(val color: Int, val width: Float, val kind: String) {
+        /** Width of the black centre stripe ("center" / "double"), as a share of the width. */
+        val innerShare: Float get() = when (kind) { "center" -> 0.25f; "double" -> 0.46f; else -> 0f }
+    }
+
+    class Variant(val code: String, val event: String, val label: String, val line: Line, val priority: Float)
+
+    val KINDS = listOf("solid", "center", "double")
+
+    /**
+     * Warning lines: every warning type and threat level has a code and its own line. Defaults
+     * use the NWS colours; the NWS has no separate colours for threat levels, so those are told
+     * apart by the line style.
+     */
+    val VARIANTS: Map<String, Variant> = listOf(
+        Variant("TORE", "Tornado Emergency", "Tornado – Emergency", Line(rgb(0xff, 0, 0), 6.0f, "double"), 14f),
+        Variant("TORP", "Tornado Warning", "Tornado – PDS", Line(rgb(0xff, 0, 0), 4.0f, "center"), 13f),
+        Variant("TORR", "Tornado Warning", "Tornado – Reported", Line(rgb(0xff, 0, 0), 4.0f, "solid"), 12f),
+        Variant("TOR", "Tornado Warning", "Tornado", Line(rgb(0xff, 0, 0), 3.0f, "solid"), 11f),
+        Variant("EWW", "Extreme Wind Warning", "Extreme Wind", Line(rgb(0xff, 0x8c, 0), 3.0f, "solid"), 10f),
+        Variant("FFWE", "Flash Flood Emergency", "Flash Flood – Emergency", Line(rgb(0x8b, 0, 0), 5.5f, "double"), 9.5f),
+        Variant("SVRD", "Severe Thunderstorm Warning", "Severe Thunderstorm – Destructive", Line(rgb(0xff, 0xa5, 0), 4.0f, "center"), 9f),
+        Variant("SVRC", "Severe Thunderstorm Warning", "Severe Thunderstorm – Considerable", Line(rgb(0xff, 0xa5, 0), 3.5f, "solid"), 8.5f),
+        Variant("SVR", "Severe Thunderstorm Warning", "Severe Thunderstorm", Line(rgb(0xff, 0xa5, 0), 2.5f, "solid"), 8f),
+        Variant("FFWC", "Flash Flood Warning", "Flash Flood – Considerable", Line(rgb(0x8b, 0, 0), 3.5f, "solid"), 7.5f),
+        Variant("FFW", "Flash Flood Warning", "Flash Flood", Line(rgb(0x8b, 0, 0), 2.5f, "solid"), 7f),
+        Variant("SMW", "Special Marine Warning", "Special Marine", Line(rgb(0xff, 0xa5, 0), 2.0f, "solid"), 6f),
+        Variant("SQW", "Snow Squall Warning", "Snow Squall", Line(rgb(0xc7, 0x15, 0x85), 2.5f, "solid"), 6f),
+        Variant("DSW", "Dust Storm Warning", "Dust Storm", Line(rgb(0xff, 0xe4, 0xc4), 2.0f, "solid"), 5f),
+        Variant("SPS", "Special Weather Statement", "Special Weather Statement", Line(rgb(0xff, 0xe4, 0xb5), 1.5f, "solid"), 2f),
+        Variant("TOA", "Tornado Watch", "Tornado Watch", Line(rgb(0xff, 0xff, 0), 1.5f, "solid"), 1f),
+        Variant("SVA", "Severe Thunderstorm Watch", "Severe Thunderstorm Watch", Line(rgb(0xdb, 0x70, 0x93), 1.5f, "solid"), 1f),
+    ).associateBy { it.code }
+
+    val BASE_CODE = mapOf("Tornado Warning" to "TOR", "Tornado Emergency" to "TORE", "Severe Thunderstorm Warning" to "SVR",
+        "Flash Flood Warning" to "FFW", "Flash Flood Emergency" to "FFWE", "Special Marine Warning" to "SMW",
+        "Extreme Wind Warning" to "EWW", "Snow Squall Warning" to "SQW", "Dust Storm Warning" to "DSW",
+        "Special Weather Statement" to "SPS", "Tornado Watch" to "TOA", "Severe Thunderstorm Watch" to "SVA")
+
+    /** "Classic colours" preset: green flash flood, yellow severe, magenta reported/PDS/emergency tornado. */
+    val CLASSIC_PRESET: Map<String, Line> = mapOf(
+        "SQW" to Line(rgb(0x80, 0x80, 0xff), 2.5f, "solid"), "SMW" to Line(rgb(0, 0xe0, 0xe0), 2.0f, "solid"),
+        "FFW" to Line(rgb(0, 0xff, 0), 2.5f, "solid"), "FFWC" to Line(rgb(0, 0xff, 0), 3.5f, "solid"),
+        "FFWE" to Line(rgb(0, 0xff, 0), 5.5f, "double"),
+        "SVR" to Line(rgb(0xff, 0xff, 0), 2.5f, "solid"), "SVRC" to Line(rgb(0xff, 0xff, 0), 3.5f, "solid"),
+        "SVRD" to Line(rgb(0xff, 0xff, 0), 4.0f, "center"),
+        "TOR" to Line(rgb(0xff, 0, 0), 3.0f, "solid"), "TORR" to Line(rgb(0xff, 0, 0xff), 3.5f, "solid"),
+        "TORP" to Line(rgb(0xff, 0, 0xff), 4.0f, "center"), "TORE" to Line(rgb(0xff, 0, 0xff), 6.0f, "double"),
+    )
+
+    /** Warning-line code from the NWS impact tags in an alert's parameters. */
+    fun variantOf(event: String, params: Map<String, Any?>): String {
+        fun first(k: String) = params[k].arr().firstOrNull()?.str()?.trim()?.uppercase() ?: ""
+        val dmg = first("tornadoDamageThreat").ifEmpty { first("thunderstormDamageThreat") }.ifEmpty { first("flashFloodDamageThreat") }
+        return when (event) {
+            "Tornado Emergency" -> "TORE"
+            "Tornado Warning" -> when {
+                dmg == "CATASTROPHIC" -> "TORE"
+                dmg == "CONSIDERABLE" -> "TORP"
+                first("tornadoDetection") == "OBSERVED" -> "TORR"
+                else -> "TOR"
+            }
+            "Severe Thunderstorm Warning" -> when (dmg) { "DESTRUCTIVE" -> "SVRD"; "CONSIDERABLE" -> "SVRC"; else -> "SVR" }
+            "Flash Flood Emergency" -> "FFWE"
+            "Flash Flood Warning" -> when (dmg) { "CATASTROPHIC" -> "FFWE"; "CONSIDERABLE" -> "FFWC"; else -> "FFW" }
+            else -> BASE_CODE[event] ?: "SPS"
+        }
+    }
 
     private fun style(event: String, width: Float, fill: Int, priority: Int) =
         Style(NWS_COLORS.getValue(event), width, fill, priority)
@@ -121,8 +193,12 @@ object Alerts {
             var ev = p["event"].str()
             if (ev !in STYLES) continue
             val desc = p["description"].str()
-            if (ev == "Tornado Warning" && desc.uppercase().contains("TORNADO EMERGENCY")) ev = "Tornado Emergency"
-            if (ev == "Flash Flood Warning" && desc.uppercase().contains("FLASH FLOOD EMERGENCY")) ev = "Flash Flood Emergency"
+            val params = p["parameters"].obj()
+            fun param(k: String) = params[k].arr().firstOrNull()?.str()?.trim()?.uppercase() ?: ""
+            if (ev == "Tornado Warning" && (desc.uppercase().contains("TORNADO EMERGENCY") || param("tornadoDamageThreat") == "CATASTROPHIC"))
+                ev = "Tornado Emergency"
+            if (ev == "Flash Flood Warning" && (desc.uppercase().contains("FLASH FLOOD EMERGENCY") || param("flashFloodDamageThreat") == "CATASTROPHIC"))
+                ev = "Flash Flood Emergency"
             val rings = ArrayList<FloatArray>()
             val g = fo["geometry"].obj()
             val coords = g["coordinates"].arr()
@@ -137,7 +213,6 @@ object Alerts {
                 }
             }
             if (rings.isEmpty()) continue
-            val params = p["parameters"].obj()
             val tags = ArrayList<String>()
             fun first(k: String) = params[k].arr().firstOrNull()?.str()?.takeIf { it.isNotBlank() }
             first("tornadoDetection")?.let { tags.add(it) }
@@ -146,9 +221,11 @@ object Alerts {
             first("flashFloodDamageThreat")?.let { tags.add("$it flood threat") }
             first("maxHailSize")?.let { tags.add("hail $it in") }
             first("maxWindGust")?.let { tags.add("wind $it") }
+            val variant = variantOf(ev, params)
             out.add(Alert(
                 id = p["id"].str(fo["id"].str()),
                 event = ev,
+                variant = variant,
                 style = STYLES.getValue(ev),
                 rings = rings,
                 sentMs = Time.parseIso(p["sent"].str()),
@@ -161,7 +238,7 @@ object Alerts {
                 tags = tags,
             ))
         }
-        out.sortBy { it.style.priority }
+        out.sortBy { VARIANTS[it.variant]?.priority ?: 0f }
         return out
     }
 

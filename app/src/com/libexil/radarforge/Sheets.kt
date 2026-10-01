@@ -125,7 +125,7 @@ object Sheets {
             "watch" to "Watches", "other" to "Other (extreme wind, marine, snow squall, dust storm, special statements)")) {
             col.addView(W.switchRow(a, label, null, p.warnGroup(key)) { on -> p.setWarnGroup(key, on); a.rebuildAlerts(); a.rebuild() })
         }
-        col.addView(W.listRow(a, "Warning colours", "NWS colours by default – pick your own for any type", "›") { warningColors(a) }, lp())
+        col.addView(W.listRow(a, "Warning lines", "Colour, width and style for each warning and threat level", "›") { warningLines(a) }, lp())
         col.addView(W.section(a, "Radar"))
         col.addView(W.switchRow(a, "Smooth radar", "Blend neighbouring gates instead of showing them as blocks", p.smooth) { on ->
             p.smooth = on; a.rebuild()
@@ -158,9 +158,9 @@ object Sheets {
             val now = System.currentTimeMillis()
             for (al in alerts) {
                 val row = W.hRow(a).apply { setPadding(0, 0, 0, 0) }
-                row.addView(View(a).apply { background = rounded(a.warnColor(al.event), a.dp(3f)) }, LinearLayout.LayoutParams(a.dpi(6f), a.dpi(40f)))
+                row.addView(View(a).apply { background = rounded(a.warnColor(al), a.dp(3f)) }, LinearLayout.LayoutParams(a.dpi(6f), a.dpi(40f)))
                 val left = if (al.expiresMs > now) "${(al.expiresMs - now) / 60_000} min left" else "expired"
-                val r = W.listRow(a, al.event, listOf(al.area, al.tags.joinToString(" · ")).filter { it.isNotBlank() }.joinToString("\n"), left) {
+                val r = W.listRow(a, "${al.variantLabel}  (${al.variant})", listOf(al.area, al.tags.joinToString(" · ")).filter { it.isNotBlank() }.joinToString("\n"), left) {
                     alertDetail(a, al)
                 }
                 row.addView(r, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -173,9 +173,10 @@ object Sheets {
 
     fun alertDetail(a: MainActivity, al: Alert) {
         val col = W.vCol(a)
-        val color = a.warnColor(al.event)
-        col.addView(View(a).apply { background = rounded(color, a.dp(2f)) }, lp(h = a.dpi(4f)))
-        col.addView(W.text(a, al.event, 20f, readable(color), true), lp(top = a.dpi(10f)))
+        val color = a.warnColor(al)
+        col.addView(LineSample(a, a.warnLine(al.variant)), lp(h = a.dpi(16f)))
+        col.addView(W.text(a, al.variantLabel, 20f, readable(color), true), lp(top = a.dpi(10f)))
+        col.addView(W.text(a, "${al.variant} · ${al.event}", 13f, C.dim), lp(top = a.dpi(2f)))
         if (al.office.isNotEmpty()) col.addView(W.text(a, "NWS ${al.office}", 14f, C.dim), lp(top = a.dpi(4f)))
         val now = System.currentTimeMillis()
         val times = buildString {
@@ -195,7 +196,7 @@ object Sheets {
             col.addView(android.widget.HorizontalScrollView(a).apply { addView(tags); isHorizontalScrollBarEnabled = false }, lp(top = a.dpi(10f)))
         }
         if (al.area.isNotEmpty()) col.addView(W.text(a, al.area, 13.5f, C.dim).apply { setLineSpacing(0f, 1.15f) }, lp(top = a.dpi(10f)))
-        col.addView(W.button(a, "Show on map", primary = true) { a.sheets.close(); a.zoomTo(al) }, lp(top = a.dpi(12f)))
+        col.addView(W.button(a, "Show on map", primary = true) { a.sheets.close(); a.goToAlert(al) }, lp(top = a.dpi(12f)))
         if (al.headline.isNotEmpty()) col.addView(W.text(a, al.headline, 15f, C.text, true).apply { setLineSpacing(0f, 1.15f) }, lp(top = a.dpi(14f)))
         if (al.description.isNotEmpty()) col.addView(mono(a, al.description), lp(top = a.dpi(10f)))
         if (al.instruction.isNotEmpty()) {
@@ -239,7 +240,7 @@ object Sheets {
 
         col.addView(W.section(a, "Colours"))
         col.addView(W.listRow(a, "Colour tables", "Built-in GR-style tables, or import your own .pal files", "›") { colorTables(a) }, lp())
-        col.addView(W.listRow(a, "Warning colours", "Outline colour for each warning and watch type", "›") { warningColors(a) }, lp())
+        col.addView(W.listRow(a, "Warning lines", "Colour, width and style for each warning and threat level", "›") { warningLines(a) }, lp())
 
         col.addView(W.section(a, "General"))
         col.addView(W.switchRow(a, "Keep the screen on", "While RadarForge is open", p.keepScreenOn) { p.keepScreenOn = it; a.settingsChanged() })
@@ -299,33 +300,81 @@ object Sheets {
 
     private fun hex(c: Int) = String.format(Locale.US, "#%06X", c and 0xffffff)
 
-    fun warningColors(a: MainActivity) {
-        val col = W.vCol(a)
-        col.addView(W.note(a, "The defaults are the National Weather Service's own hazard colours. Tornado and flash flood emergencies have no NWS colour of their own, so they use the warning's colour, drawn thicker."))
-        for (ev in Alerts.STYLES.keys) {
-            val custom = a.prefs.warnColor(ev) != null
-            val row = W.hRow(a)
-            row.addView(View(a).apply { background = rounded(a.warnColor(ev), a.dp(6f), 0x66ffffff, a.dpi(1f)) },
-                LinearLayout.LayoutParams(a.dpi(30f), a.dpi(22f)).apply { leftMargin = a.dpi(6f) })
-            row.addView(W.listRow(a, ev, if (custom) "Custom · ${hex(a.warnColor(ev))}" else "NWS colour · ${hex(a.warnColor(ev))}", "›") {
-                colorPicker(a, ev)
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            col.addView(row, lp())
+    /** Draws a warning line sample (colour, width, style) across the view. */
+    class LineSample(ctx: Context, line: Alerts.Line) : View(ctx) {
+        var line: Alerts.Line = line
+            set(v) { field = v; invalidate() }
+        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE
+            strokeCap = android.graphics.Paint.Cap.ROUND
         }
-        col.addView(W.button(a, "Reset all to NWS colours") {
-            for (ev in Alerts.STYLES.keys) a.prefs.setWarnColor(ev, null)
-            a.rebuildAlerts(); a.rebuild()
-            warningColors(a)
-        }, lp(top = a.dpi(12f)))
-        a.sheets.show("Warning colours", col, fullHeight = true)
+
+        override fun onDraw(c: android.graphics.Canvas) {
+            c.drawColor(0xff101116.toInt())
+            val d = resources.displayMetrics.density
+            val y = height / 2f
+            val w = line.width * d * 1.1f
+            val x0 = 10f * d
+            val x1 = width - 10f * d
+            paint.color = line.color or 0xff000000.toInt()
+            paint.strokeWidth = w
+            c.drawLine(x0, y, x1, y, paint)
+            val inner = w * line.innerShare
+            if (inner > 0f) {
+                paint.color = 0xff000000.toInt()
+                paint.strokeWidth = maxOf(1f, inner)
+                c.drawLine(x0, y, x1, y, paint)
+            }
+        }
     }
 
-    private fun colorPicker(a: MainActivity, event: String) {
-        val nws = Alerts.NWS_COLORS[event] ?: 0xffffffff.toInt()
-        var color = a.warnColor(event)
+    /** Every warning type and threat level with its line; tap one to change it. */
+    fun warningLines(a: MainActivity) {
         val col = W.vCol(a)
-        val preview = View(a)
-        col.addView(preview, lp(h = a.dpi(46f), top = a.dpi(4f)))
+        col.addView(W.note(a, "Every warning type and threat level has its own line. Tap one to change its colour, width and style. The defaults use the NWS colours; the NWS has no separate colours for threat levels, so those are told apart by the line style."))
+        for ((code, v) in Alerts.VARIANTS) {
+            val row = W.hRow(a).apply {
+                setPadding(a.dpi(4f), a.dpi(6f), a.dpi(4f), a.dpi(6f))
+                background = com.libexil.radarforge.ui.ripple(null, rounded(0xffffffff.toInt(), a.dp(10f)))
+                isClickable = true
+                setOnClickListener { lineEditor(a, code) }
+            }
+            row.addView(LineSample(a, a.warnLine(code)), LinearLayout.LayoutParams(a.dpi(78f), a.dpi(26f)))
+            row.addView(W.text(a, code, 14.5f, C.text, true).apply { minWidth = a.dpi(54f) },
+                LinearLayout.LayoutParams(-2, -2).apply { leftMargin = a.dpi(12f) })
+            row.addView(W.text(a, v.label, 14.5f, C.text), LinearLayout.LayoutParams(0, -2, 1f))
+            if (a.prefs.warnLine(code) != null) row.addView(W.text(a, "custom", 12f, C.dim))
+            col.addView(row, lp())
+        }
+        col.addView(W.section(a, "Presets"))
+        val presets = W.hRow(a)
+        presets.addView(W.button(a, "NWS colours") {
+            for (code in Alerts.VARIANTS.keys) a.prefs.setWarnLine(code, null)
+            for (ev in Alerts.BASE_CODE.keys) a.prefs.setWarnColor(ev, null)
+            a.rebuildAlerts(); a.rebuild(); warningLines(a)
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = a.dpi(8f) })
+        presets.addView(W.button(a, "Classic colours") {
+            for (code in Alerts.VARIANTS.keys) a.prefs.setWarnLine(code, Alerts.CLASSIC_PRESET[code])
+            a.rebuildAlerts(); a.rebuild(); warningLines(a)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        col.addView(presets, lp())
+        col.addView(W.note(a, "Classic colours: green flash flood, yellow severe thunderstorm, magenta reported / PDS / emergency tornado."))
+        col.addView(W.section(a, "Going to a warning"))
+        col.addView(W.switchRow(a, "Switch to the nearest radar", "When you open a warning's \"Show on map\"", a.prefs.goToNearestRadar) {
+            a.prefs.goToNearestRadar = it
+        })
+        a.sheets.show("Warning lines", col, fullHeight = true)
+    }
+
+    private fun lineEditor(a: MainActivity, code: String) {
+        val v = Alerts.VARIANTS.getValue(code)
+        val start = a.warnLine(code)
+        var color = start.color or 0xff000000.toInt()
+        var width = start.width
+        var kind = start.kind
+        val col = W.vCol(a)
+        val sample = LineSample(a, start)
+        col.addView(sample, lp(h = a.dpi(48f), top = a.dpi(4f)))
         val hexField = EditText(a).apply {
             textSize = 16f
             setTextColor(C.text)
@@ -339,19 +388,55 @@ object Sheets {
         val bars = ArrayList<android.widget.SeekBar>()
         val values = ArrayList<TextView>()
         var updating = false
+        val kindChips = HashMap<String, W.Chip>()
+        lateinit var widthBar: android.widget.SeekBar
+        lateinit var widthText: TextView
         fun show(fromHex: Boolean = false) {
             updating = true
-            preview.background = rounded(color, a.dp(10f), 0x66ffffff, a.dpi(1f))
+            sample.line = Alerts.Line(color, width, kind)
             if (!fromHex) hexField.setText(hex(color))
             val ch = intArrayOf((color shr 16) and 0xff, (color shr 8) and 0xff, color and 0xff)
             for (k in 0..2) { bars[k].progress = ch[k]; values[k].text = ch[k].toString() }
+            widthBar.progress = (width * 2).toInt() - 1
+            widthText.text = String.format(Locale.US, "%.1f", width)
+            for ((k, chip) in kindChips) chip.selectedState = k == kind
             updating = false
         }
-        // presets: the NWS hazard colours plus a few clear map colours
-        val presets = (Alerts.NWS_COLORS.values.distinct() + listOf(
-            0xffffffff, 0xffb0b0b0, 0xff00ffff, 0xff1e90ff, 0xff0000ff, 0xff00ff00, 0xff008000, 0xff9400d3,
-            0xffff00ff, 0xffff69b4, 0xffffd700, 0xff8b4513).map { it.toInt() }).distinct()
-        col.addView(W.section(a, "Presets"))
+        // style
+        col.addView(W.section(a, "Style"))
+        val kinds = W.hRow(a)
+        for ((k, label) in listOf("solid" to "Solid", "center" to "Centre line", "double" to "Double")) {
+            val chip = W.chip(a, label, k == kind) { kind = k; show() }
+            kindChips[k] = chip
+            kinds.addView(chip, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = a.dpi(8f) })
+        }
+        col.addView(kinds, lp())
+        // width
+        val wrow = W.hRow(a).apply { setPadding(0, a.dpi(10f), 0, 0) }
+        wrow.addView(W.text(a, "Width", 14f, C.dim), LinearLayout.LayoutParams(a.dpi(52f), -2))
+        widthBar = android.widget.SeekBar(a).apply {
+            max = 23                                    // 0.5 .. 12 in steps of 0.5
+            progressTintList = android.content.res.ColorStateList.valueOf(C.accent)
+            thumbTintList = android.content.res.ColorStateList.valueOf(C.accent)
+            setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: android.widget.SeekBar?, p: Int, fromUser: Boolean) {
+                    if (updating || !fromUser) return
+                    width = (p + 1) / 2f
+                    show()
+                }
+                override fun onStartTrackingTouch(s: android.widget.SeekBar?) {}
+                override fun onStopTrackingTouch(s: android.widget.SeekBar?) {}
+            })
+        }
+        wrow.addView(widthBar, LinearLayout.LayoutParams(0, -2, 1f))
+        widthText = W.text(a, "", 13f, C.text).apply { minWidth = a.dpi(34f); gravity = Gravity.END }
+        wrow.addView(widthText)
+        col.addView(wrow, lp())
+        // colour presets: NWS colours plus a few clear map colours
+        val presets = (Alerts.VARIANTS.values.map { it.line.color } + Alerts.CLASSIC_PRESET.values.map { it.color } + listOf(
+            0xffffffff, 0xffb0b0b0, 0xff00ffff, 0xff1e90ff, 0xff0000ff, 0xff008000, 0xff9400d3, 0xffff69b4, 0xffffd700, 0xff8b4513
+        ).map { it.toInt() }).distinct()
+        col.addView(W.section(a, "Colour"))
         var rowView: LinearLayout? = null
         for ((i, c) in presets.withIndex()) {
             if (i % 7 == 0) { rowView = W.hRow(a); col.addView(rowView, lp(top = a.dpi(6f))) }
@@ -362,8 +447,7 @@ object Sheets {
                 setOnClickListener { color = c; show() }
             }, LinearLayout.LayoutParams(a.dpi(34f), a.dpi(34f)).apply { rightMargin = a.dpi(9f) })
         }
-        col.addView(W.section(a, "Custom"))
-        col.addView(hexField, lp())
+        col.addView(hexField, lp(top = a.dpi(12f)))
         for ((k, name) in listOf("Red", "Green", "Blue").withIndex()) {
             val row = W.hRow(a).apply { setPadding(0, a.dpi(8f), 0, 0) }
             row.addView(W.text(a, name, 14f, C.dim), LinearLayout.LayoutParams(a.dpi(52f), -2))
@@ -385,9 +469,9 @@ object Sheets {
             }
             bars.add(sb)
             row.addView(sb, LinearLayout.LayoutParams(0, -2, 1f))
-            val v = W.text(a, "", 13f, C.text).apply { minWidth = a.dpi(34f); gravity = Gravity.END }
-            values.add(v)
-            row.addView(v)
+            val tv = W.text(a, "", 13f, C.text).apply { minWidth = a.dpi(34f); gravity = Gravity.END }
+            values.add(tv)
+            row.addView(tv)
             col.addView(row, lp())
         }
         hexField.addTextChangedListener(object : TextWatcher {
@@ -400,15 +484,20 @@ object Sheets {
             }
         })
         val buttons = W.hRow(a).apply { setPadding(0, a.dpi(16f), 0, 0) }
-        buttons.addView(W.button(a, "NWS colour") { color = nws; show() }, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = a.dpi(8f) })
+        buttons.addView(W.button(a, "Default") {
+            color = v.line.color; width = v.line.width; kind = v.line.kind; show()
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = a.dpi(8f) })
         buttons.addView(W.button(a, "Save", primary = true) {
-            a.prefs.setWarnColor(event, if (color == nws) null else color)
+            val line = Alerts.Line(color, width, kind)
+            val isDefault = color == (v.line.color or 0xff000000.toInt()) && width == v.line.width && kind == v.line.kind
+            a.prefs.setWarnLine(code, if (isDefault) null else line)
+            if (Alerts.BASE_CODE[v.event] == code) a.prefs.setWarnColor(v.event, null)   // the old 1.1.0 colour
             a.rebuildAlerts(); a.rebuild()
-            warningColors(a)
+            warningLines(a)
         }, LinearLayout.LayoutParams(0, -2, 1f))
         col.addView(buttons, lp())
         show()
-        a.sheets.show(event, col, fullHeight = true)
+        a.sheets.show("$code – ${v.label}", col, fullHeight = true)
     }
 
     // ------------------------------------------------------------------ about / diagnostics

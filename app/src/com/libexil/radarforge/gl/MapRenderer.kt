@@ -229,11 +229,13 @@ class MapRenderer(private val ctx: Context, private val state: MapState) : GLSur
         val margin = l.widthPx / v.scale + 1f
         val x0 = v.cx - halfW - margin; val x1 = v.cx + halfW + margin
         val y0 = v.cy - halfH - margin; val y1 = v.cy + halfH + margin
-        val passes = if (l.halo) 2 else 1
-        for (pass in 0 until passes) {
-            val halo = l.halo && pass == 0
-            val c = if (halo) 0xd0000000.toInt() else l.color
-            glUniform1f(lu.getValue("u_width"), if (halo) l.widthPx + 2.5f else l.widthPx)
+        // dark halo, the colour, then the black centre stripe of "center" / "double" lines
+        val passes = ArrayList<Pair<Int, Float>>(3)
+        if (l.halo) passes.add(0xd0000000.toInt() to l.widthPx + 2.5f)
+        passes.add(l.color to l.widthPx)
+        if (l.innerPx > 0f) passes.add(0xff000000.toInt() to maxOf(1f, l.innerPx))
+        for ((c, w) in passes) {
+            glUniform1f(lu.getValue("u_width"), w)
             glUniform4f(lu.getValue("u_color"), ((c shr 16) and 0xff) / 255f, ((c shr 8) and 0xff) / 255f,
                 (c and 0xff) / 255f, ((c ushr 24) and 0xff) / 255f)
             for (ch in pl.chunks) {

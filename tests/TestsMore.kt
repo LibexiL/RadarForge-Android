@@ -78,6 +78,24 @@ private fun alerts() {
     ok(Alerts.NWS_COLORS.getValue("Flash Flood Warning") == 0xff8b0000.toInt() && Alerts.NWS_COLORS.getValue("Tornado Watch") == 0xffffff00.toInt() &&
         Alerts.STYLES.getValue("Extreme Wind Warning").color == 0xffff8c00.toInt(), "NWS colours")
     ok(Alerts.STYLES.keys == Alerts.NWS_COLORS.keys, "every style has an NWS colour")
+    ok(tor.variant == "TORE", "tornado emergency variant ${tor.variant}")
+    ok(watch.variant == "TOA", "watch variant")
+    fun params(vararg kv: Pair<String, String>) = kv.associate { (k, v) -> k to listOf(v) }
+    val cases = listOf(
+        Triple("Tornado Warning", params("tornadoDetection" to "RADAR INDICATED"), "TOR"),
+        Triple("Tornado Warning", params("tornadoDetection" to "OBSERVED"), "TORR"),
+        Triple("Tornado Warning", params("tornadoDetection" to "OBSERVED", "tornadoDamageThreat" to "CONSIDERABLE"), "TORP"),
+        Triple("Tornado Warning", params("tornadoDamageThreat" to "CATASTROPHIC"), "TORE"),
+        Triple("Severe Thunderstorm Warning", params("thunderstormDamageThreat" to "CONSIDERABLE"), "SVRC"),
+        Triple("Severe Thunderstorm Warning", params("thunderstormDamageThreat" to "DESTRUCTIVE"), "SVRD"),
+        Triple("Severe Thunderstorm Warning", params("tornadoDetection" to "POSSIBLE"), "SVR"),
+        Triple("Flash Flood Warning", params("flashFloodDamageThreat" to "CONSIDERABLE"), "FFWC"),
+        Triple("Flash Flood Emergency", params(), "FFWE"),
+        Triple("Snow Squall Warning", params(), "SQW"),
+        Triple("Severe Thunderstorm Watch", params(), "SVA"))
+    for ((ev, p, want) in cases) ok(Alerts.variantOf(ev, p) == want, "variant of $ev $p = ${Alerts.variantOf(ev, p)}, expected $want")
+    ok(Alerts.BASE_CODE.values.all { it in Alerts.VARIANTS } && Alerts.CLASSIC_PRESET.keys.all { it in Alerts.VARIANTS }, "codes known")
+    ok(Alerts.VARIANTS.getValue("TORE").line.kind == "double" && Alerts.VARIANTS.getValue("SVRD").line.innerShare > 0f, "line kinds")
     for ((ev, g) in mapOf("Tornado Warning" to "tornado", "Tornado Emergency" to "tornado", "Tornado Watch" to "watch",
             "Severe Thunderstorm Warning" to "severe", "Severe Thunderstorm Watch" to "watch", "Flash Flood Warning" to "flood",
             "Flash Flood Emergency" to "flood", "Extreme Wind Warning" to "other", "Special Weather Statement" to "other"))

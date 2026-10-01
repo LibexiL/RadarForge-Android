@@ -43,7 +43,9 @@ You need an Android phone or tablet with **Android 8.0 or newer** (almost any ph
   for the tilt on screen), which keeps mobile-data use down.
 - **NWS warnings** (tornado, severe thunderstorm, flash flood, marine, snow squall, special weather
   statements) and **watches**, with tornado and flash flood emergencies highlighted. Tap one to read it.
-  Outlines use the NWS's own hazard colours, and you can pick your own colour for each type.
+  Every warning type and threat level (TOR, TORR, TORP, TORE, SVR, SVRC, SVRD, FFW, FFWC, FFWE…) has
+  its own line – colour, width and style – with NWS colours by default. "Show on map" switches to the
+  radar nearest the warning.
 - **Inspector:** press and hold anywhere to read the value, the distance and bearing from the radar,
   the beam height and the latitude/longitude.
 - **Colour tables:** GR-style tables built in, and you can import your own GRLevelX / GR2Analyst
@@ -68,7 +70,7 @@ You need an Android phone or tablet with **Android 8.0 or newer** (almost any ph
 | Loop | ▶ at the bottom; drag the slider to step through frames, ✕ to stop |
 | Warnings | The ⚠ button at the top (the number counts warnings near the radar) |
 | Map layers | The layers button at the top |
-| Settings | The sliders button: units, storm motion for SRV, loop length and speed, colour tables, warning colours |
+| Settings | The sliders button: units, storm motion for SRV, loop length and speed, colour tables, warning lines |
 
 **Storm-relative velocity** uses the storm motion set under Settings (default: from 240° at 30 kt).
 

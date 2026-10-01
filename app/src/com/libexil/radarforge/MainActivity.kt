@@ -282,6 +282,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
                 rebuildAlerts()
                 updateLocationKm()
                 rebuild()
+                pendingZoom?.let { pendingZoom = null; zoomTo(it) }
             }
         }
     }
@@ -624,8 +625,16 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         rings = ProjectedLayer(pts, listOf(ProjectedLayer.Chunk(0, pts.size / 2, -maxKm, -maxKm, maxKm, maxKm)))
     }
 
-    /** Outline colour for a warning type: the user's choice, else the NWS colour. */
-    fun warnColor(event: String): Int = prefs.warnColor(event) ?: Alerts.NWS_COLORS[event] ?: Alerts.STYLES[event]?.color ?: C.text
+    /** The line for a warning code (TOR, TORP, SVRD...): the user's choice, else the default (NWS colours). */
+    fun warnLine(code: String): Alerts.Line {
+        prefs.warnLine(code)?.let { return it }
+        val v = Alerts.VARIANTS[code] ?: Alerts.VARIANTS.getValue("SPS")
+        // 1.1.0 kept one colour per event: still honoured for the event's base line
+        val legacy = if (Alerts.BASE_CODE[v.event] == code) prefs.warnColor(v.event) else null
+        return if (legacy != null) Alerts.Line(legacy, v.line.width, v.line.kind) else v.line
+    }
+
+    fun warnColor(a: Alert): Int = warnLine(a.variant).color
 
     fun rebuildAlerts() {
         val wasWanted = dm.wantAlerts
@@ -645,8 +654,11 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         visibleAlerts = near
         overlay.alerts = near
         val d = resources.displayMetrics.density
-        alertLayers = near.map { a ->
-            LayerDraw(ProjectedLayer.fromRings(a.rings, g.proj), warnColor(a.event), a.style.width * d * 1.1f, halo = !a.isWatch)
+        // higher threat levels drawn last, on top
+        alertLayers = near.sortedBy { Alerts.VARIANTS[it.variant]?.priority ?: 0f }.map { a ->
+            val ln = warnLine(a.variant)
+            val w = ln.width * d * 1.1f
+            LayerDraw(ProjectedLayer.fromRings(a.rings, g.proj), ln.color, w, halo = !a.isWatch, innerPx = w * ln.innerShare)
         }
         val warnings = near.count { !it.isWatch }
         warnBtn.badge = if (warnings > 0) (if (warnings > 99) "99+" else warnings.toString()) else null
@@ -738,6 +750,24 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             refreshProductChips()
             overlay.invalidate()
         }
+    }
+
+    private var pendingZoom: Alert? = null
+
+    /** Goes to a warning: switches to the radar nearest it (when that setting is on), then zooms in. */
+    fun goToAlert(a: Alert) {
+        if (prefs.goToNearestRadar) {
+            val lat = (a.minLat + a.maxLat) / 2.0
+            val lon = (a.minLon + a.maxLon) / 2.0
+            val n = Sites.nearest(sites, lat, lon)
+            if (n != null && n.id != site?.id) {
+                pendingZoom = a                 // zoom once the new radar's map is ready
+                selectSite(n)
+                toast("Switched to ${n.id} – the nearest radar to this warning")
+                return
+            }
+        }
+        zoomTo(a)
     }
 
     /** Centres the map on a polygon (warnings). */

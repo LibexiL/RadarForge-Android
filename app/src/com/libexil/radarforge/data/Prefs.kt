@@ -73,7 +73,25 @@ class Prefs(ctx: Context) {
     fun warnGroup(name: String) = p.getBoolean("warn_$name", true)
     fun setWarnGroup(name: String, on: Boolean) = put { putBoolean("warn_$name", on) }
 
-    /** A custom outline colour for a warning type (0xAARRGGBB), or null for the NWS colour. */
+    /** A custom warning line (colour, width, style) for a code like TORP, or null for the default. */
+    fun warnLine(code: String): com.libexil.radarforge.core.Alerts.Line? {
+        val v = p.getString("wl_$code", null) ?: return null
+        val parts = v.split(",")
+        if (parts.size != 3) return null
+        val c = parts[0].toLongOrNull()?.toInt() ?: return null
+        val w = parts[1].toFloatOrNull() ?: return null
+        val k = parts[2].takeIf { it in com.libexil.radarforge.core.Alerts.KINDS } ?: "solid"
+        return com.libexil.radarforge.core.Alerts.Line(c, w.coerceIn(0.5f, 12f), k)
+    }
+    fun setWarnLine(code: String, line: com.libexil.radarforge.core.Alerts.Line?) = put {
+        if (line == null) remove("wl_$code") else putString("wl_$code", "${line.color.toLong() and 0xffffffffL},${line.width},${line.kind}")
+    }
+
+    var goToNearestRadar: Boolean
+        get() = p.getBoolean("go_nearest_radar", true)
+        set(v) = put { putBoolean("go_nearest_radar", v) }
+
+    /** (1.1.0) A custom outline colour per warning type; now part of warnLine. */
     fun warnColor(event: String): Int? = if (p.contains("wcol_$event")) p.getInt("wcol_$event", 0) else null
     fun setWarnColor(event: String, argb: Int?) = put { if (argb == null) remove("wcol_$event") else putInt("wcol_$event", argb) }
 
