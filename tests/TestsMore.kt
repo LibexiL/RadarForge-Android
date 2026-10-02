@@ -14,6 +14,7 @@ fun registerMore() {
     Extra.all.add("sites" to ::sites)
     Extra.all.add("basemap read + project" to ::basemap)
     Extra.all.add("loop: read just enough" to ::loopEnough)
+    registerFeeds()
 }
 
 private fun s3Listing() {

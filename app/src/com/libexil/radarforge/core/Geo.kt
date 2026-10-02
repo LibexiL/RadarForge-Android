@@ -85,6 +85,71 @@ object Geo {
 
     fun azimuthDeg(x: Double, y: Double): Double = (Math.toDegrees(atan2(x, y)) + 360.0) % 360.0
 
+    /** Initial great-circle bearing from point 1 to point 2, degrees clockwise from north. */
+    fun bearingDeg(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val p1 = Math.toRadians(lat1); val p2 = Math.toRadians(lat2)
+        val dl = Math.toRadians(lon2 - lon1)
+        val y = sin(dl) * cos(p2)
+        val x = cos(p1) * sin(p2) - sin(p1) * cos(p2) * cos(dl)
+        return (Math.toDegrees(atan2(y, x)) + 360.0) % 360.0
+    }
+
+    /** The point [distKm] away from (lat, lon) along [bearingDeg]: (lat, lon). */
+    fun destination(lat: Double, lon: Double, bearingDeg: Double, distKm: Double): DoubleArray {
+        val d = distKm / EARTH_R
+        val th = Math.toRadians(bearingDeg)
+        val p1 = Math.toRadians(lat); val l1 = Math.toRadians(lon)
+        val p2 = asin((sin(p1) * cos(d) + cos(p1) * sin(d) * cos(th)).coerceIn(-1.0, 1.0))
+        val l2 = l1 + atan2(sin(th) * sin(d) * cos(p1), cos(d) - sin(p1) * sin(p2))
+        return doubleArrayOf(Math.toDegrees(p2), (Math.toDegrees(l2) + 540.0) % 360.0 - 180.0)
+    }
+
+    /** A distance in the chosen units: "mi", "km" or "nm". Finer steps when short. */
+    fun distText(km: Double, units: String): String {
+        val (v, u) = when (units) { "km" -> km to "km"; "nm" -> km * 0.539957 to "nm"; else -> km * 0.621371 to "mi" }
+        return when {
+            v < 10 -> String.format(Locale.US, "%.2f %s", v, u)
+            v < 100 -> String.format(Locale.US, "%.1f %s", v, u)
+            else -> String.format(Locale.US, "%.0f %s", v, u)
+        }
+    }
+
+    /** A speed given in km/h in the chosen velocity units: "kts", "mph" or "m/s". */
+    fun speedText(kmh: Double, units: String): String = when (units) {
+        "mph" -> String.format(Locale.US, "%.0f mph", kmh * 0.621371)
+        "m/s" -> String.format(Locale.US, "%.0f m/s", kmh / 3.6)
+        else -> String.format(Locale.US, "%.0f kts", kmh / 1.852)
+    }
+
+    /** Even-odd point-in-polygon over lon,lat rings (holes and multi-part shapes both work). */
+    fun ringsContain(rings: List<FloatArray>, lat: Double, lon: Double): Boolean {
+        var inside = false
+        for (r in rings) {
+            val n = r.size / 2
+            if (n < 3) continue
+            var j = n - 1
+            for (i in 0 until n) {
+                val xi = r[2 * i]; val yi = r[2 * i + 1]
+                val xj = r[2 * j]; val yj = r[2 * j + 1]
+                if ((yi > lat) != (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside
+                j = i
+            }
+        }
+        return inside
+    }
+
+    /** Bounding box of lon,lat rings: [minLat, maxLat, minLon, maxLon]. */
+    fun ringsBox(rings: List<FloatArray>): FloatArray {
+        var a = 999f; var b = -999f; var c = 999f; var d = -999f
+        for (r in rings) {
+            var i = 0
+            while (i + 1 < r.size) {
+                c = minOf(c, r[i]); d = maxOf(d, r[i]); a = minOf(a, r[i + 1]); b = maxOf(b, r[i + 1]); i += 2
+            }
+        }
+        return floatArrayOf(a, b, c, d)
+    }
+
     fun latLonText(lat: Double, lon: Double): String =
         String.format(Locale.US, "%.4f°%s %.4f°%s", abs(lat), if (lat >= 0) "N" else "S", abs(lon), if (lon >= 0) "E" else "W")
 

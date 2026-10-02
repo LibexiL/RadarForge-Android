@@ -18,8 +18,17 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.libexil.radarforge.core.Alert
 import com.libexil.radarforge.core.Alerts
+import com.libexil.radarforge.core.Chaser
 import com.libexil.radarforge.core.Geo
+import com.libexil.radarforge.core.MesoDiscussion
+import com.libexil.radarforge.core.Net
+import com.libexil.radarforge.core.OutlookArea
+import com.libexil.radarforge.core.ReportKind
+import com.libexil.radarforge.core.Site
+import com.libexil.radarforge.core.Spc
+import com.libexil.radarforge.core.StormReport
 import com.libexil.radarforge.core.Time
+import com.libexil.radarforge.data.Prefs
 import com.libexil.radarforge.ui.C
 import com.libexil.radarforge.ui.Icon
 import com.libexil.radarforge.ui.IconView
@@ -55,7 +64,26 @@ object Sheets {
         val list = W.vCol(a)
         col.addView(list, lp(top = a.dpi(8f)))
         val loc = a.lastLocation
-        fun fill(q: String) {
+        lateinit var fill: (String) -> Unit
+        fun row(s: Site): View {
+            val dist = loc?.let {
+                val km = Geo.distanceKm(it.latitude, it.longitude, s.lat, s.lon)
+                if (a.prefs.distUnits == "km") "${km.toInt()} km" else "${(km * 0.621371).toInt()} mi"
+            }
+            val r = W.hRow(a)
+            r.addView(W.listRow(a, s.id, s.title, dist, highlighted = s.id == a.site?.id) {
+                a.sheets.close()
+                if (s.id != a.site?.id) a.stopFollowing()
+                a.selectSite(s)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            val fav = s.id in a.prefs.favorites
+            r.addView(W.iconButton(a, if (fav) Icon.STAR_ON else Icon.STAR, if (fav) "Remove ${s.id} from favourites" else "Add ${s.id} to favourites") {
+                a.prefs.favorites = if (fav) a.prefs.favorites - s.id else a.prefs.favorites + s.id
+                fill(search.text?.toString() ?: "")
+            }.apply { setTint(if (fav) 0xffffd700.toInt() else C.dim) })
+            return r
+        }
+        fill = { q ->
             list.removeAllViews()
             val qq = q.trim().lowercase(Locale.US)
             var items = a.sites.filter {
@@ -63,19 +91,17 @@ object Sheets {
                     "${it.place}, ${it.state}".lowercase().contains(qq)
             }
             items = if (loc != null) items.sortedBy { Geo.distanceKm(loc.latitude, loc.longitude, it.lat, it.lon) } else items.sortedBy { it.id }
-            for (s in items) {
-                val dist = loc?.let {
-                    val km = Geo.distanceKm(it.latitude, it.longitude, s.lat, s.lon)
-                    if (a.prefs.distUnits == "km") "${km.toInt()} km" else "${(km * 0.621371).toInt()} mi"
-                }
-                list.addView(W.listRow(a, s.id, s.title, dist, highlighted = s.id == a.site?.id) {
-                    a.sheets.close()
-                    a.selectSite(s)
-                }, lp())
+            val favs = a.prefs.favorites.mapNotNull { id -> a.sites.firstOrNull { it.id == id } }
+            if (qq.isEmpty() && favs.isNotEmpty()) {
+                list.addView(W.section(a, "Favourites"))
+                for (s in favs) list.addView(row(s), lp())
+                list.addView(W.section(a, if (loc != null) "Nearest first" else "All radars"))
             }
+            for (s in items) list.addView(row(s), lp())
             if (items.isEmpty()) list.addView(W.note(a, "No radar matches \"$q\"."))
         }
         fill("")
+        if (a.prefs.favorites.isEmpty()) col.addView(W.note(a, "Tap ☆ to keep a radar at the top of this list."), 2)
         search.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, af: Int) {}
             override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
@@ -113,7 +139,7 @@ object Sheets {
         val col = W.vCol(a)
         col.addView(W.section(a, "Map"))
         fun layer(key: String, label: String, desc: String?) =
-            col.addView(W.switchRow(a, label, desc, p.layer(key)) { on -> p.setLayer(key, on); if (key == "warnings") a.rebuildAlerts(); a.rebuild() })
+            col.addView(W.switchRow(a, label, desc, p.layer(key)) { on -> p.setLayer(key, on); a.layersChanged() })
         layer("counties", "Counties", null)
         layer("roads", "Highways", null)
         layer("cities", "Cities", null)
@@ -126,12 +152,45 @@ object Sheets {
             col.addView(W.switchRow(a, label, null, p.warnGroup(key)) { on -> p.setWarnGroup(key, on); a.rebuildAlerts(); a.rebuild() })
         }
         col.addView(W.listRow(a, "Warning lines", "Colour, width and style for each warning and threat level", "›") { warningLines(a) }, lp())
+
+        col.addView(W.section(a, "Storm reports"))
+        layer("reports", "Storm reports", "NWS local storm reports, plus Spotter Network reports: tornado, hail, wind, flooding. Tap one to read it.")
+        col.addView(W.text(a, "Show the last", 14f, C.dim), lp(top = a.dpi(4f)))
+        col.addView(W.segmented(a, Prefs.REPORT_HOURS.map { "$it" to "$it h" }, "${p.reportHours}") {
+            p.reportHours = it.toInt(); a.applyFeedPrefs(); a.dm.refreshFeed("reports"); a.rebuildFeeds()
+        })
+        val groups = W.hRow(a)
+        for ((g, label) in ReportKind.GROUPS) {
+            groups.addView(W.chip(a, label, p.reportGroup(g)) { c ->
+                val on = !p.reportGroup(g)
+                p.setReportGroup(g, on)
+                c.selectedState = on
+                a.rebuildFeeds()
+            }, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = a.dpi(6f) })
+        }
+        col.addView(android.widget.HorizontalScrollView(a).apply { isHorizontalScrollBarEnabled = false; addView(groups) }, lp(top = a.dpi(4f)))
+        col.addView(W.switchRow(a, "Include Spotter Network reports", "Sent in by trained spotters, often before the NWS posts them", p.spotterReports) {
+            p.spotterReports = it; a.applyFeedPrefs(); a.dm.refreshFeed("reports"); a.rebuildFeeds()
+        })
+        col.addView(W.listRow(a, "List of storm reports", "Newest first, near this radar", "›") { reportList(a, a.visibleReports, "Storm reports") }, lp())
+
+        col.addView(W.section(a, "Storm chasers"))
+        layer("chasers", "Storm chasers", "Live positions from Spotter Network, updated every minute. Arrows point the way they're driving; colour shows how fresh the position is.")
+        col.addView(W.segmented(a, listOf("all" to "Everyone", "active" to "Active reporters"), if (p.chasersActiveOnly) "active" else "all") {
+            p.chasersActiveOnly = it == "active"; a.applyFeedPrefs(); a.dm.refreshFeed("chasers")
+        })
+        col.addView(W.note(a, "Active reporters: members with at least 5 accepted reports in the last 12 months. Cyan: updated in the last 15 minutes, amber: within the hour, grey: older."))
+        col.addView(W.switchRow(a, "Show names", "When zoomed in", p.chaserNames) { p.chaserNames = it; a.rebuildFeeds() })
+
+        col.addView(W.section(a, "Storm Prediction Center"))
+        layer("outlook", "Day 1 convective outlook", "Today's risk areas: TSTM, MRGL, SLGT, ENH, MDT, HIGH. Tap inside one for the tornado, wind and hail chances.")
+        layer("mcd", "Mesoscale discussions", "Blue outlines – tap one to read it")
         col.addView(W.section(a, "Radar"))
         col.addView(W.switchRow(a, "Smooth radar", "Blend neighbouring gates instead of showing them as blocks", p.smooth) { on ->
             p.smooth = on; a.rebuild()
         })
         col.addView(W.switchRow(a, "Colour legend", null, p.showLegend) { on -> p.showLegend = on; a.settingsChanged() })
-        a.sheets.show("Map layers", col)
+        a.sheets.show("Map layers", col, fullHeight = true)
     }
 
     // ------------------------------------------------------------------ warnings
@@ -146,11 +205,18 @@ object Sheets {
             return
         }
         val list = a.visibleAlerts.sortedWith(compareByDescending<Alert> { it.style.priority }.thenBy { it.expiresMs })
-        alertList(a, list, "Warnings near ${a.site?.id ?: ""}")
+        alertList(a, list, "Warnings near ${a.site?.id ?: ""}") { col ->
+            if (a.prefs.layer("reports")) {
+                val n = a.visibleReports.size
+                col.addView(W.listRow(a, "Storm reports", if (n == 0) "None near this radar in the last ${a.prefs.reportHours} h" else
+                    "$n in the last ${a.prefs.reportHours} h", "›") { reportList(a, a.visibleReports, "Storm reports") }, lp())
+            }
+        }
     }
 
-    fun alertList(a: MainActivity, alerts: List<Alert>, title: String) {
+    fun alertList(a: MainActivity, alerts: List<Alert>, title: String, header: ((LinearLayout) -> Unit)? = null) {
         val col = W.vCol(a)
+        header?.invoke(col)
         if (alerts.isEmpty()) {
             col.addView(W.note(a, if (a.dm.alertsTime == 0L) "Loading warnings…" else
                 "No active warnings within about 550 miles of this radar.\nUpdated ${Time.age(a.dm.alertsTime)}."))
@@ -171,9 +237,16 @@ object Sheets {
         a.sheets.show(title, col, fullHeight = alerts.size > 4)
     }
 
-    fun alertDetail(a: MainActivity, al: Alert) {
+    fun alertDetail(a: MainActivity, al: Alert, forYou: Boolean = false) {
         val col = W.vCol(a)
         val color = a.warnColor(al)
+        if (forYou) {
+            col.addView(W.text(a, "This warning covers your location", 15f, 0xffffffff.toInt(), true).apply {
+                background = rounded(0xffb3261e.toInt(), a.dp(10f))
+                setPadding(a.dpi(12f), a.dpi(10f), a.dpi(12f), a.dpi(10f))
+            }, lp(top = a.dpi(2f)))
+            col.addView(W.gap(a, 1f, 10f))
+        }
         col.addView(LineSample(a, a.warnLine(al.variant)), lp(h = a.dpi(16f)))
         col.addView(W.text(a, al.variantLabel, 20f, readable(color), true), lp(top = a.dpi(10f)))
         col.addView(W.text(a, "${al.variant} · ${al.event}", 13f, C.dim), lp(top = a.dpi(2f)))
@@ -241,6 +314,19 @@ object Sheets {
         col.addView(W.section(a, "Colours"))
         col.addView(W.listRow(a, "Colour tables", "Built-in GR-style tables, or import your own .pal files", "›") { colorTables(a) }, lp())
         col.addView(W.listRow(a, "Warning lines", "Colour, width and style for each warning and threat level", "›") { warningLines(a) }, lp())
+
+        col.addView(W.section(a, "My location"))
+        col.addView(W.switchRow(a, "Show my location", "Keeps the blue dot up to date while RadarForge is open", p.liveLocation) {
+            p.liveLocation = it
+            if (it && !a.hasLocationPermission()) a.requestLocationPermission()
+            a.settingsChanged()
+        })
+        col.addView(W.switchRow(a, "Switch radars as I travel", "While following your location (tap the location button at the bottom)", p.autoSwitchRadar) {
+            p.autoSwitchRadar = it
+        })
+        col.addView(W.switchRow(a, "Alert me in a new warning", "Opens a tornado, severe thunderstorm or flash flood warning that covers where you are, and vibrates, while the app is open (needs Show my location, or following). Not a replacement for official alerts.", p.warnAtLocation) {
+            p.warnAtLocation = it
+        })
 
         col.addView(W.section(a, "General"))
         col.addView(W.switchRow(a, "Keep the screen on", "While RadarForge is open", p.keepScreenOn) { p.keepScreenOn = it; a.settingsChanged() })
@@ -500,6 +586,164 @@ object Sheets {
         a.sheets.show("$code – ${v.label}", col, fullHeight = true)
     }
 
+    // ------------------------------------------------------------------ storm reports
+    /** A coloured disc with the report's letter, like on the map. */
+    private fun badge(a: MainActivity, k: ReportKind, sizeDp: Float = 30f) = TextView(a).apply {
+        text = k.letter
+        textSize = if (k.letter.length > 1) 10.5f else 14f
+        typeface = Typeface.DEFAULT_BOLD
+        gravity = Gravity.CENTER
+        setTextColor(0xff000000.toInt())
+        background = rounded(k.color, a.dp(sizeDp / 2), 0xff000000.toInt(), a.dpi(1.5f))
+        layoutParams = LinearLayout.LayoutParams(a.dpi(sizeDp), a.dpi(sizeDp))
+    }
+
+    private fun ago(ms: Long) = if (ms > 0) "${Time.local(ms)} · ${Time.age(ms)}" else "time not given"
+
+    fun reportList(a: MainActivity, reports: List<StormReport>, title: String) {
+        val col = W.vCol(a)
+        if (!a.prefs.layer("reports")) {
+            col.addView(W.note(a, "Storm reports are turned off."))
+            col.addView(W.button(a, "Show storm reports", primary = true) {
+                a.prefs.setLayer("reports", true); a.layersChanged(); a.sheets.close()
+                a.toast("Loading storm reports…")
+            }, lp())
+            a.sheets.show(title, col)
+            return
+        }
+        if (reports.isEmpty()) {
+            col.addView(W.note(a, if (a.dm.reportsTime == 0L) "Loading storm reports…" else
+                "No storm reports near this radar in the last ${a.prefs.reportHours} hours (with the types chosen under Map layers).\nUpdated ${Time.age(a.dm.reportsTime)}."))
+        } else {
+            for (r in reports.take(400)) {
+                val row = W.hRow(a)
+                row.addView(badge(a, r.kind))
+                row.addView(W.listRow(a, r.title, "${r.place}\n${ago(r.timeMs)} · ${r.origin}", null) { reportDetail(a, r) },
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = a.dpi(4f) })
+                col.addView(row, lp())
+            }
+            if (reports.size > 400) col.addView(W.note(a, "Showing the newest 400 of ${reports.size}."))
+            col.addView(W.note(a, "Updated ${Time.age(a.dm.reportsTime)}. NWS reports via the Iowa Environmental Mesonet; preliminary and may change."))
+        }
+        a.sheets.show(title, col, fullHeight = reports.size > 4)
+    }
+
+    fun reportDetail(a: MainActivity, r: StormReport) {
+        val col = W.vCol(a)
+        val head = W.hRow(a)
+        head.addView(badge(a, r.kind, 40f))
+        head.addView(W.text(a, r.title, 20f, C.text, true), LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = a.dpi(12f) })
+        col.addView(head, lp(top = a.dpi(4f)))
+        if (r.type.isNotBlank() && !r.title.contains(r.type, true)) col.addView(W.text(a, r.type, 13f, C.dim), lp(top = a.dpi(6f)))
+        col.addView(W.text(a, ago(r.timeMs), 14.5f, C.text), lp(top = a.dpi(10f)))
+        col.addView(W.text(a, r.place, 14.5f, C.text), lp(top = a.dpi(6f)))
+        val by = listOf(r.source, r.origin).filter { it.isNotBlank() }.distinct().joinToString(" · ")
+        if (by.isNotEmpty()) col.addView(W.text(a, by, 13.5f, C.dim), lp(top = a.dpi(6f)))
+        col.addView(W.text(a, Geo.latLonText(r.lat, r.lon), 13f, C.dim), lp(top = a.dpi(4f)))
+        col.addView(W.button(a, "Show on map", primary = true) { a.sheets.close(); a.goToPoint(r.lat, r.lon) }, lp(top = a.dpi(12f)))
+        if (r.remark.isNotBlank()) col.addView(W.text(a, r.remark, 14.5f, C.text).apply { setLineSpacing(0f, 1.2f); setTextIsSelectable(true) }, lp(top = a.dpi(14f)))
+        col.addView(W.note(a, "Storm reports are preliminary. Not an official warning source."), lp(top = a.dpi(12f)))
+        a.sheets.show("Storm report", col)
+    }
+
+    // ------------------------------------------------------------------ storm chasers
+    private fun chaserMotion(c: Chaser): String = c.heading?.let { "Driving ${Geo.compass(it.toDouble())} (${it.toInt()}°)" } ?: "Stationary"
+
+    fun chaserList(a: MainActivity, chasers: List<Chaser>) {
+        val col = W.vCol(a)
+        for (c in chasers) {
+            col.addView(W.listRow(a, c.name, "${chaserMotion(c)} · ${if (c.timeMs > 0) Time.age(c.timeMs) else "time not given"}", "›") {
+                chaserDetail(a, c)
+            }, lp())
+        }
+        a.sheets.show("Storm chasers here", col, fullHeight = chasers.size > 5)
+    }
+
+    fun chaserDetail(a: MainActivity, c: Chaser) {
+        val col = W.vCol(a)
+        col.addView(W.text(a, c.name, 20f, C.text, true), lp(top = a.dpi(4f)))
+        if (c.label != c.name && !c.name.contains(c.label)) col.addView(W.text(a, c.label, 14f, C.dim), lp(top = a.dpi(4f)))
+        col.addView(W.text(a, chaserMotion(c), 15f, C.text), lp(top = a.dpi(10f)))
+        col.addView(W.text(a, if (c.timeMs > 0) "Position from ${ago(c.timeMs)}" else "Position time not given", 14f, C.dim), lp(top = a.dpi(4f)))
+        a.lastLocation?.let { me ->
+            val km = Geo.distanceKm(me.latitude, me.longitude, c.lat, c.lon)
+            val b = Geo.bearingDeg(me.latitude, me.longitude, c.lat, c.lon)
+            col.addView(W.text(a, "${Geo.distText(km, a.prefs.distUnits)} ${Geo.compass(b)} of you", 14f, C.dim), lp(top = a.dpi(4f)))
+        }
+        for ((k, v) in c.info) {
+            col.addView(TextView(a).apply {
+                text = "$k: $v"
+                textSize = 14f
+                setTextColor(C.text)
+                setLinkTextColor(0xff8fb4ff.toInt())
+                autoLinkMask = android.text.util.Linkify.WEB_URLS
+                setTextIsSelectable(true)
+                movementMethod = android.text.method.LinkMovementMethod.getInstance()
+            }, lp(top = a.dpi(6f)))
+        }
+        col.addView(W.button(a, "Show on map", primary = true) { a.sheets.close(); a.goToPoint(c.lat, c.lon) }, lp(top = a.dpi(14f)))
+        col.addView(W.note(a, "Position shared through Spotter Network (spotternetwork.org) for non-commercial use."), lp(top = a.dpi(10f)))
+        a.sheets.show("Storm chaser", col)
+    }
+
+    // ------------------------------------------------------------------ SPC
+    private val mcdTexts = HashMap<String, String>()
+
+    fun mcdDetail(a: MainActivity, m: MesoDiscussion) {
+        val col = W.vCol(a)
+        col.addView(W.text(a, "Mesoscale Discussion ${m.number}", 20f, 0xff8fb4ff.toInt(), true), lp(top = a.dpi(4f)))
+        if (m.concerning.isNotBlank()) col.addView(W.text(a, "Concerning: ${m.concerning.lowercase(Locale.US).replaceFirstChar { it.titlecase(Locale.US) }}", 14.5f, C.text), lp(top = a.dpi(8f)))
+        val now = System.currentTimeMillis()
+        val times = buildString {
+            if (m.issueMs > 0) append("Issued ${Time.local(m.issueMs)}")
+            if (m.expireMs > 0) {
+                append("   ·   Until ${Time.local(m.expireMs)}")
+                if (m.expireMs > now) append(" (${(m.expireMs - now) / 60_000} min)")
+            }
+        }
+        col.addView(W.text(a, times, 14f, C.dim), lp(top = a.dpi(6f)))
+        m.watchChance?.let { col.addView(W.text(a, "Chance of a watch: $it%", 14.5f, C.text, true), lp(top = a.dpi(6f))) }
+        val year = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply { timeInMillis = if (m.issueMs > 0) m.issueMs else now }.get(java.util.Calendar.YEAR)
+        col.addView(W.listRow(a, "Open on the SPC website", "spc.noaa.gov – with the map", "›") {
+            try { a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Spc.mcdPage(m.number, year)))) } catch (_: Exception) {}
+        }, lp(top = a.dpi(8f)))
+        val body = mono(a, mcdTexts[m.productId] ?: "Loading the discussion…")
+        col.addView(body, lp(top = a.dpi(8f)))
+        if (m.productId.isNotBlank() && !mcdTexts.containsKey(m.productId)) {
+            Thread {
+                val text = try { Net.getText(Spc.mcdTextUrl(m.productId), 20_000).trim() } catch (e: Exception) { null }
+                a.runOnUiThread {
+                    if (text != null) mcdTexts[m.productId] = text
+                    body.text = text ?: "Couldn't load the text – open it on the SPC website instead."
+                }
+            }.apply { isDaemon = true }.start()
+        }
+        a.sheets.show("SPC discussion", col, fullHeight = true)
+    }
+
+    fun outlookDetail(a: MainActivity, lat: Double, lon: Double, hits: List<OutlookArea>) {
+        val col = W.vCol(a)
+        val cat = hits.filter { it.category == "CATEGORICAL" }.maxByOrNull { Spc.catIndex(it.threshold) } ?: return
+        val color = Spc.CAT_COLOR[cat.threshold] ?: C.text
+        col.addView(W.text(a, Spc.CAT_NAME[cat.threshold] ?: cat.threshold, 20f, color, true), lp(top = a.dpi(4f)))
+        col.addView(W.text(a, "SPC day 1 convective outlook (${cat.threshold})", 13.5f, C.dim), lp(top = a.dpi(4f)))
+        if (cat.expireMs > 0) col.addView(W.text(a, "Valid until ${Time.local(cat.expireMs, "EEE h:mm a")}" +
+            if (cat.issueMs > 0) "  ·  issued ${Time.local(cat.issueMs)}" else "", 13.5f, C.dim), lp(top = a.dpi(2f)))
+        col.addView(W.section(a, "Chance within 25 miles of here"))
+        for ((key, label, none) in listOf(Triple("TORNADO", "Tornado", "under 2%"), Triple("WIND", "Damaging wind", "under 5%"), Triple("HAIL", "Large hail", "under 5%"))) {
+            val mine = hits.filter { it.category == key }
+            val best = mine.mapNotNull { it.threshold.toDoubleOrNull() }.maxOrNull()
+            val sig = mine.any { it.threshold == "SIGN" }
+            val text = (if (best != null) "${Math.round(best * 100)}%" else none) + if (sig) "  ·  significant (hatched)" else ""
+            val row = W.hRow(a).apply { setPadding(a.dpi(4f), a.dpi(6f), a.dpi(4f), a.dpi(6f)) }
+            row.addView(W.text(a, label, 15f), LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(W.text(a, text, 15f, if (best != null) C.text else C.dim, best != null))
+            col.addView(row, lp())
+        }
+        col.addView(W.note(a, "${Geo.latLonText(lat, lon)}\nFrom the Storm Prediction Center via the Iowa Environmental Mesonet. Updated ${Time.age(a.dm.outlookTime)}."), lp(top = a.dpi(8f)))
+        a.sheets.show("Outlook", col)
+    }
+
     // ------------------------------------------------------------------ about / diagnostics
     fun about(a: MainActivity) {
         val col = W.vCol(a)
@@ -507,7 +751,7 @@ object Sheets {
         col.addView(W.text(a, "RadarForge $ver", 20f, C.text, true), lp(top = a.dpi(6f)))
         col.addView(W.note(a, "A NEXRAD weather radar viewer for Android, in the spirit of the RadarForge desktop app."))
         col.addView(W.section(a, "Data"))
-        col.addView(W.note(a, "Radar: NOAA NEXRAD Level II on AWS (Unidata real-time chunks and archive).\nWarnings: National Weather Service API.\nMap: US Census Bureau, Natural Earth, GeoNames.\n\nNot an official warning source – always follow the NWS and local officials."))
+        col.addView(W.note(a, "Radar: NOAA NEXRAD Level II on AWS (Unidata real-time chunks and archive).\nWarnings: National Weather Service API.\nStorm reports, SPC outlooks and discussions: NWS and Storm Prediction Center via the Iowa Environmental Mesonet.\nStorm chasers and spotter reports: Spotter Network (non-commercial use).\nMap: US Census Bureau, Natural Earth, GeoNames.\n\nNot an official warning source – always follow the NWS and local officials."))
         col.addView(W.listRow(a, "Project page", "github.com/LibexiL", "›") {
             try { a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/LibexiL"))) } catch (_: Exception) {}
         }, lp())
@@ -523,6 +767,9 @@ object Sheets {
             append("Site: ${a.site?.id}  live: ${a.dm.live?.let { Time.iso(it.startMs) + " (" + it.sweeps.size + " sweeps)" } ?: "-"}\n")
             append("Complete: ${a.dm.complete?.let { Time.iso(it.startMs) + " VCP " + it.vcp } ?: "-"}\n")
             append("Warnings: ${a.dm.alerts.size} (updated ${if (a.dm.alertsTime > 0) Time.age(a.dm.alertsTime) else "never"})\n")
+            fun upd(t: Long) = if (t > 0) Time.age(t) else "never"
+            append("Reports: ${a.dm.reports.size} (${upd(a.dm.reportsTime)})  Chasers: ${a.dm.chasers.size} (${upd(a.dm.chasersTime)})\n")
+            append("SPC: outlook ${a.dm.outlook.size} areas (${upd(a.dm.outlookTime)}), ${a.dm.mcds.size} discussions (${upd(a.dm.mcdTime)})\n")
             append("Memory: ${Runtime.getRuntime().totalMemory() / (1 shl 20)} / ${Runtime.getRuntime().maxMemory() / (1 shl 20)} MB\n\n")
             append(RfLog.text())
         }
@@ -554,8 +801,36 @@ object Sheets {
         a.sheets.show(title, col, fullHeight = true)
     }
 
+    fun whatsNew(a: MainActivity) {
+        a.prefs.seenWhatsNew = MainActivity.WHATS_NEW
+        val col = W.vCol(a)
+        val items = listOf(
+            "Measuring tools – the ruler at the bottom: distances, or a storm track with arrival times for the towns ahead.",
+            "Storm reports and storm chasers (Spotter Network) – switch them on under Map layers.",
+            "SPC day 1 outlook and mesoscale discussions – also under Map layers.",
+            "The location button now follows you, switching radars as you travel. Tap it again to stop.",
+            "Share a picture of the map with the share button at the top.",
+            "Star your favourite radars in the radar list.",
+        )
+        for (t in items) {
+            val row = W.hRow(a).apply { setPadding(0, a.dpi(6f), 0, a.dpi(6f)) }
+            row.addView(IconView(a, Icon.CHECK, C.accent), LinearLayout.LayoutParams(a.dpi(26f), a.dpi(26f)))
+            row.addView(W.text(a, t, 14.5f, C.text).apply { setLineSpacing(0f, 1.15f) }, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = a.dpi(8f) })
+            col.addView(row, lp())
+        }
+        col.addView(W.section(a, "Your location"))
+        col.addView(W.switchRow(a, "Keep my location up to date", "While the app is open. Needed to be alerted when a new warning covers where you are (Settings → My location).", a.prefs.liveLocation) {
+            a.prefs.liveLocation = it
+            if (it && !a.hasLocationPermission()) a.requestLocationPermission()
+            a.stopLiveLocation(); a.startLiveLocation()        // starts again only if wanted (or following)
+        })
+        col.addView(W.button(a, "Got it", primary = true) { a.sheets.close() }, lp(top = a.dpi(14f)))
+        a.sheets.show("New in RadarForge ${MainActivity.WHATS_NEW}", col)
+    }
+
     fun welcome(a: MainActivity) {
         a.prefs.seenWelcome = true
+        a.prefs.seenWhatsNew = MainActivity.WHATS_NEW
         val col = W.vCol(a)
         col.addView(W.note(a, "Live NEXRAD radar, tilt by tilt as the radar scans."))
         val tips = listOf(
@@ -565,6 +840,8 @@ object Sheets {
             "Pick products along the bottom; the arrows change the tilt.",
             "The panel button shows 2 or 4 linked panels – tap a panel to choose its product.",
             "Play builds a loop of the last few scans.",
+            "The ruler measures distances, or tracks a storm and shows when it reaches the towns ahead.",
+            "Map layers has storm reports, storm chasers and the SPC outlook.",
         )
         for (t in tips) {
             val row = W.hRow(a).apply { setPadding(0, a.dpi(6f), 0, a.dpi(6f)) }
@@ -572,6 +849,11 @@ object Sheets {
             row.addView(W.text(a, t, 14.5f, C.text).apply { setLineSpacing(0f, 1.15f) }, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = a.dpi(8f) })
             col.addView(row, lp())
         }
+        col.addView(W.switchRow(a, "Keep my location up to date", "While the app is open, so the map can show where you are and alert you when a new warning covers it.", a.prefs.liveLocation) {
+            a.prefs.liveLocation = it
+            if (it && !a.hasLocationPermission()) a.requestLocationPermission()
+            a.stopLiveLocation(); a.startLiveLocation()
+        })
         col.addView(W.button(a, "Got it", primary = true) { a.sheets.close() }, lp(top = a.dpi(14f)))
         a.sheets.show("Welcome to RadarForge", col)
     }

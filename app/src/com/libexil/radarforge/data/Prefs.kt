@@ -67,7 +67,8 @@ class Prefs(ctx: Context) {
         get() = p.getBoolean("legend", true)
         set(v) = put { putBoolean("legend", v) }
 
-    fun layer(name: String, default: Boolean = true) = p.getBoolean("layer_$name", default)
+    /** Map layers; the newer ones (storm reports, chasers, SPC) start switched off. */
+    fun layer(name: String) = p.getBoolean("layer_$name", name !in OFF_BY_DEFAULT)
     fun setLayer(name: String, on: Boolean) = put { putBoolean("layer_$name", on) }
 
     fun warnGroup(name: String) = p.getBoolean("warn_$name", true)
@@ -110,4 +111,72 @@ class Prefs(ctx: Context) {
     var seenWelcome: Boolean
         get() = p.getBoolean("seen_welcome", false)
         set(v) = put { putBoolean("seen_welcome", v) }
+
+    /** The newest version whose "what's new" sheet has been shown. */
+    var seenWhatsNew: String
+        get() = s("seen_whats_new", "")
+        set(v) = put { putString("seen_whats_new", v) }
+
+    // ---- storm reports
+    /** How far back storm reports go: 1, 3, 6, 12 or 24 hours. */
+    var reportHours: Int
+        get() = p.getInt("report_hours", 6).let { if (it in REPORT_HOURS) it else 6 }
+        set(v) = put { putInt("report_hours", v) }
+
+    /** Report filters: tornado, hail, wind, flood, other (rain, snow...). */
+    fun reportGroup(name: String) = p.getBoolean("rep_$name", name != "other")
+    fun setReportGroup(name: String, on: Boolean) = put { putBoolean("rep_$name", on) }
+
+    var spotterReports: Boolean
+        get() = p.getBoolean("sn_reports", true)
+        set(v) = put { putBoolean("sn_reports", v) }
+
+    // ---- storm chasers
+    var chasersActiveOnly: Boolean
+        get() = p.getBoolean("chasers_active", false)
+        set(v) = put { putBoolean("chasers_active", v) }
+
+    var chaserNames: Boolean
+        get() = p.getBoolean("chaser_names", true)
+        set(v) = put { putBoolean("chaser_names", v) }
+
+    // ---- radars
+    var favorites: List<String>
+        get() = s("favorites", "").split(",").filter { it.isNotBlank() }
+        set(v) = put { putString("favorites", v.distinct().joinToString(",")) }
+
+    // ---- my location
+    /** Keep the location dot up to date while the app is open (off until asked for: it shows the location indicator). */
+    var liveLocation: Boolean
+        get() = p.getBoolean("live_location", false)
+        set(v) = put { putBoolean("live_location", v) }
+
+    /** While following your location, switch to the nearest radar as you travel. */
+    var autoSwitchRadar: Boolean
+        get() = p.getBoolean("auto_switch_radar", true)
+        set(v) = put { putBoolean("auto_switch_radar", v) }
+
+    /** Open a warning (and vibrate) when a new one covers where you are. */
+    var warnAtLocation: Boolean
+        get() = p.getBoolean("warn_at_location", true)
+        set(v) = put { putBoolean("warn_at_location", v) }
+
+    /** Warnings already opened for your location: warning key -> (threat priority, expiry ms). */
+    var notifiedWarnings: Map<String, Pair<Float, Long>>
+        get() = s("notified_warnings", "").split(";").mapNotNull { e ->
+            val f = e.split("~")
+            if (f.size != 3) null else f[0] to ((f[1].toFloatOrNull() ?: 0f) to (f[2].toLongOrNull() ?: 0L))
+        }.toMap()
+        set(v) = put { putString("notified_warnings", v.entries.joinToString(";") { "${it.key}~${it.value.first}~${it.value.second}" }) }
+
+    // ---- measuring
+    var trackMinutes: Int
+        get() = p.getInt("track_minutes", 60).let { if (it in TRACK_MINUTES) it else 60 }
+        set(v) = put { putInt("track_minutes", v) }
+
+    companion object {
+        val OFF_BY_DEFAULT = setOf("reports", "chasers", "outlook", "mcd")
+        val REPORT_HOURS = listOf(1, 3, 6, 12, 24)
+        val TRACK_MINUTES = listOf(30, 60, 90, 120)
+    }
 }

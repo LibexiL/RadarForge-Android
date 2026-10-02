@@ -15,6 +15,10 @@ class Alert(
     val area: String,
     val office: String,
     val tags: List<String>,
+    /** The same for every update of one warning: VTEC office.phenomenon.significance.number (else the id). */
+    val trackKey: String = id,
+    /** VTEC action: NEW, CON, EXT, EXA, EXB, UPG, CAN, EXP... ("" when there's none). */
+    val action: String = "",
 ) {
     val minLat: Float; val maxLat: Float; val minLon: Float; val maxLon: Float
 
@@ -222,6 +226,7 @@ object Alerts {
             first("maxHailSize")?.let { tags.add("hail $it in") }
             first("maxWindGust")?.let { tags.add("wind $it") }
             val variant = variantOf(ev, params)
+            val vtec = params["VTEC"].arr().firstNotNullOfOrNull { VTEC.find(it.str()) }
             out.add(Alert(
                 id = p["id"].str(fo["id"].str()),
                 event = ev,
@@ -236,11 +241,16 @@ object Alerts {
                 area = p["areaDesc"].str(),
                 office = p["senderName"].str().removePrefix("NWS "),
                 tags = tags,
+                trackKey = vtec?.let { "${it.groupValues[2]}.${it.groupValues[3]}.${it.groupValues[4]}.${it.groupValues[5]}" } ?: p["id"].str(fo["id"].str()),
+                action = vtec?.groupValues?.get(1) ?: "",
             ))
         }
         out.sortBy { VARIANTS[it.variant]?.priority ?: 0f }
         return out
     }
+
+    /** "/O.CON.KOUN.TO.W.0042.261001T2130Z-261001T2200Z/" -> action, office, phenomenon, significance, number */
+    private val VTEC = Regex("""/[OTEX]\.([A-Z]{3})\.([A-Z]{4})\.([A-Z]{2})\.([A-Z])\.(\d{4})\.""")
 
     private fun ring(coords: Any?): FloatArray {
         val pts = coords.arr()

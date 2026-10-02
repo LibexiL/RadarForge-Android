@@ -25,6 +25,8 @@ class MapRenderer(private val ctx: Context, private val state: MapState) : GLSur
     @Volatile var glInfo: String = ""
         private set
     var onError: ((String) -> Unit)? = null
+    /** Set to receive the next drawn frame as a bitmap (null if reading it failed); called on the GL thread. */
+    @Volatile var capture: ((android.graphics.Bitmap?) -> Unit)? = null
 
     private var radarProg = 0
     private var lineProg = 0
@@ -100,10 +102,36 @@ class MapRenderer(private val ctx: Context, private val state: MapState) : GLSur
             for (l in sc.overlays) drawLines(l, v, vw, vh, halfW, halfH)
         }
         glDisable(GL_SCISSOR_TEST)
+        capture?.let { cb ->
+            capture = null
+            cb(try { readFrame() } catch (e: Throwable) { RfLog.e("frame capture failed", e); null })
+        }
         if (sc.keep.isNotEmpty()) preload(2)
         collect(sc)
         val err = glGetError()
         if (err != GL_NO_ERROR && frameNo % 120 == 1L) RfLog.w("GL error 0x${Integer.toHexString(err)}")
+    }
+
+    /** The frame just drawn (before it's shown), top row first. */
+    private fun readFrame(): android.graphics.Bitmap {
+        val w = state.surfaceW; val h = state.surfaceH
+        val buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
+        glPixelStorei(GL_PACK_ALIGNMENT, 4)
+        glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf)
+        // GL rows start at the bottom: flip while copying, and make every pixel opaque
+        val row = ByteArray(w * 4)
+        val flipped = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
+        for (y in h - 1 downTo 0) {
+            buf.position(y * w * 4)
+            buf.get(row)
+            var i = 3
+            while (i < row.size) { row[i] = 0xff.toByte(); i += 4 }
+            flipped.put(row)
+        }
+        flipped.rewind()
+        val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        bmp.copyPixelsFromBuffer(flipped)
+        return bmp
     }
 
     private fun clear(argb: Int) {

@@ -76,7 +76,8 @@ fun ripple(base: android.graphics.drawable.Drawable?, mask: android.graphics.dra
     RippleDrawable(ColorStateList.valueOf(0x33ffffff), base, mask ?: base ?: ColorDrawable(Color.WHITE))
 
 // ------------------------------------------------------------------------- icons
-enum class Icon { MORE, LAYERS, WARNING, PLAY, PAUSE, LOCATE, PANELS1, PANELS2, PANELS4, UP, DOWN, CLOSE, SEARCH, REFRESH, RADAR, CHECK, SLIDERS }
+enum class Icon { MORE, LAYERS, WARNING, PLAY, PAUSE, LOCATE, PANELS1, PANELS2, PANELS4, UP, DOWN, CLOSE, SEARCH, REFRESH, RADAR, CHECK, SLIDERS,
+    RULER, SHARE, STAR, STAR_ON, UNDO, TRASH }
 
 /** Small vector icons drawn in code (no image resources needed). */
 class IconView(ctx: Context, icon: Icon, private var tint: Int = C.text) : View(ctx) {
@@ -141,6 +142,49 @@ class IconView(ctx: Context, icon: Icon, private var tint: Int = C.text) : View(
                 c.drawLine(4f, 6f, 20f, 6f, p); c.drawLine(4f, 12f, 20f, 12f, p); c.drawLine(4f, 18f, 20f, 18f, p)
                 p.style = Paint.Style.FILL
                 c.drawCircle(15f, 6f, 2.6f, p); c.drawCircle(8f, 12f, 2.6f, p); c.drawCircle(13f, 18f, 2.6f, p)
+            }
+            Icon.RULER -> {
+                // a ruler lying diagonally, with tick marks along its lower edge
+                val ux = 0.7071f; val uy = -0.7071f          // along the ruler
+                val nx = 0.7071f; val ny = 0.7071f           // across it
+                fun pt(t: Float, n: Float) = floatArrayOf(12f + t * ux + n * nx, 12f + t * uy + n * ny)
+                val a = pt(11f, 4f); val b = pt(11f, -4f); val d = pt(-11f, -4f); val e = pt(-11f, 4f)
+                path.moveTo(a[0], a[1]); path.lineTo(b[0], b[1]); path.lineTo(d[0], d[1]); path.lineTo(e[0], e[1]); path.close()
+                c.drawPath(path, p)
+                p.strokeWidth = 1.7f
+                for ((k, t) in floatArrayOf(-6f, -2f, 2f, 6f).withIndex()) {
+                    val s0 = pt(t, -4f); val s1 = pt(t, if (k % 2 == 0) 0f else -1.5f)
+                    c.drawLine(s0[0], s0[1], s1[0], s1[1], p)
+                }
+            }
+            Icon.SHARE -> {
+                c.drawLine(7f, 12f, 17f, 6f, p); c.drawLine(7f, 12f, 17f, 18f, p)
+                p.style = Paint.Style.FILL
+                c.drawCircle(17.5f, 5.5f, 3f, p); c.drawCircle(6.5f, 12f, 3f, p); c.drawCircle(17.5f, 18.5f, 3f, p)
+            }
+            Icon.STAR, Icon.STAR_ON -> {
+                for (k in 0 until 10) {
+                    val ang = Math.toRadians(-90.0 + k * 36.0)
+                    val r = if (k % 2 == 0) 10.5f else 4.4f
+                    val x = 12f + (r * Math.cos(ang)).toFloat(); val y = 12.8f + (r * Math.sin(ang)).toFloat()
+                    if (k == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                }
+                path.close()
+                if (icon == Icon.STAR_ON) p.style = Paint.Style.FILL_AND_STROKE
+                c.drawPath(path, p)
+            }
+            Icon.UNDO -> {
+                path.moveTo(9f, 4.5f); path.lineTo(4f, 9.5f); path.lineTo(9f, 14.5f)
+                path.moveTo(4.5f, 9.5f); path.lineTo(14f, 9.5f); path.quadTo(20f, 9.5f, 20f, 15f); path.quadTo(20f, 20.5f, 14f, 20.5f)
+                path.lineTo(10f, 20.5f)
+                c.drawPath(path, p)
+            }
+            Icon.TRASH -> {
+                c.drawLine(3.5f, 6f, 20.5f, 6f, p)
+                path.moveTo(9f, 6f); path.lineTo(9f, 3.2f); path.lineTo(15f, 3.2f); path.lineTo(15f, 6f)
+                path.moveTo(6f, 6f); path.lineTo(7f, 21f); path.lineTo(17f, 21f); path.lineTo(18f, 6f)
+                c.drawPath(path, p)
+                c.drawLine(10f, 10f, 10f, 17f, p); c.drawLine(14f, 10f, 14f, 17f, p)
             }
         }
         c.restore()

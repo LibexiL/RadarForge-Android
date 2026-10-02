@@ -3,11 +3,16 @@ package com.libexil.radarforge
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.Typeface
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -16,6 +21,8 @@ import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.View
@@ -31,15 +38,19 @@ import android.widget.Toast
 import com.libexil.radarforge.core.Alert
 import com.libexil.radarforge.core.Alerts
 import com.libexil.radarforge.core.Basemap
+import com.libexil.radarforge.core.Chaser
 import com.libexil.radarforge.core.ColorTable
 import com.libexil.radarforge.core.Field
 import com.libexil.radarforge.core.Geo
+import com.libexil.radarforge.core.MesoDiscussion
 import com.libexil.radarforge.core.Product
 import com.libexil.radarforge.core.ProjectedCities
 import com.libexil.radarforge.core.ProjectedLayer
 import com.libexil.radarforge.core.RenderData
 import com.libexil.radarforge.core.Site
 import com.libexil.radarforge.core.Sites
+import com.libexil.radarforge.core.Spc
+import com.libexil.radarforge.core.StormReport
 import com.libexil.radarforge.core.Tilt
 import com.libexil.radarforge.core.Tilts
 import com.libexil.radarforge.core.Time
@@ -89,7 +100,10 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     var geo: SiteGeo? = null
     private var rings: ProjectedLayer? = null
     private var alertLayers: List<LayerDraw> = emptyList()
+    private var spcLayers: List<LayerDraw> = emptyList()
     var visibleAlerts: List<Alert> = emptyList()
+    /** Storm reports near the radar that pass the filters (what's drawn). */
+    var visibleReports: List<StormReport> = emptyList()
 
     var tilts: List<Tilt> = emptyList()
     // big enough for every loop frame of every panel, so playback never rebuilds fields
@@ -145,6 +159,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         dm = DataManager(this) { fips -> basemap?.countyRings(fips) ?: emptyList() }
         dm.listener = this
         dm.wantAlerts = prefs.layer("warnings")
+        applyFeedPrefs()
         applyKeepScreenOn()
         worker.execute { loadAssets() }
         Crash.takeReport()?.let { report -> main.postDelayed({ Sheets.crashReport(this, report) }, 600) }
@@ -155,6 +170,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         glView.onResume()
         dm.start()
         if (playing) main.post(loopTick)
+        startLiveLocation()
     }
 
     override fun onPause() {
@@ -163,6 +179,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         dm.stop()
         main.removeCallbacks(loopTick)
         prefs.mapScale = state.scale
+        stopLiveLocation()
     }
 
     override fun onDestroy() {
@@ -172,6 +189,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         worker.shutdownNow()
         main.removeCallbacksAndMessages(null)
         stopLocation()
+        stopLiveLocation()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -186,6 +204,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         when {
             sheets.isOpen -> sheets.close()
             overlay.inspectKm != null -> overlay.hideInspector()
+            overlay.tool != OverlayView.Tool.NONE -> closeTools()
             looping -> stopLoop()
             else -> @Suppress("DEPRECATION") super.onBackPressed()
         }
@@ -203,8 +222,34 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         overlay.showLegend = prefs.showLegend
         rebuildRings()
         rebuildAlerts()
+        rebuildFeeds()
+        rebuildSpc()
         fieldCache.clear()
         rebuild()
+        onToolChanged()
+        if (!prefs.liveLocation && !following) stopLiveLocation() else startLiveLocation()
+    }
+
+    /** A map layer or one of its options changed. */
+    fun layersChanged() {
+        applyFeedPrefs()
+        rebuildAlerts()
+        rebuildFeeds()
+        rebuildSpc()
+        rebuild()
+    }
+
+    /** Tells the data manager which feeds to fetch; anything just turned on is fetched now. */
+    fun applyFeedPrefs() {
+        val before = mapOf("reports" to dm.wantReports, "chasers" to dm.wantChasers, "outlook" to dm.wantOutlook, "mcd" to dm.wantMcd)
+        dm.reportHours = prefs.reportHours
+        dm.wantSpotterReports = prefs.spotterReports
+        dm.chasersActiveOnly = prefs.chasersActiveOnly
+        dm.wantReports = prefs.layer("reports")
+        dm.wantChasers = prefs.layer("chasers")
+        dm.wantOutlook = prefs.layer("outlook")
+        dm.wantMcd = prefs.layer("mcd")
+        for ((name, was) in before) if (prefs.layer(name) && !was) dm.refreshFeed(name)
     }
 
     // ---------------------------------------------------------------- assets + sites
@@ -218,8 +263,10 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
                 basemap = bm
                 sites = st
                 val saved = st.firstOrNull { it.id == prefs.site }
-                if (saved != null) selectSite(saved, resetView = true)
-                else firstLaunch()
+                if (saved != null) {
+                    selectSite(saved, resetView = true)
+                    if (prefs.seenWhatsNew != WHATS_NEW) main.postDelayed({ if (!sheets.isOpen) Sheets.whatsNew(this) }, 900)
+                } else firstLaunch()
             }
         } catch (e: Exception) {
             RfLog.e("asset load failed", e)
@@ -257,6 +304,9 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             overlay.proj = null
             overlay.locationKm = null
             alertLayers = emptyList()
+            spcLayers = emptyList()
+            overlay.reports = emptyList(); overlay.chasers = emptyList(); overlay.mcds = emptyList(); overlay.outlookLabels = emptyList()
+            overlay.resetTools()          // measurements are in the old radar's coordinates
         }
         if (resetView) { state.cx = 0f; state.cy = 0f }
         dm.setSite(s.id)
@@ -280,9 +330,18 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
                 overlay.currentSite = s.id
                 rebuildRings()
                 rebuildAlerts()
+                rebuildFeeds()
+                rebuildSpc()
                 updateLocationKm()
                 rebuild()
-                pendingZoom?.let { pendingZoom = null; zoomTo(it) }
+                val zoom = pendingZoom
+                val center = pendingCenter
+                pendingZoom = null; pendingCenter = null
+                when {
+                    zoom != null -> zoomTo(zoom)
+                    center != null -> centerOn(center[0], center[1])
+                    following -> lastLocation?.let { centerOn(it.latitude, it.longitude, zoomIn = false) }
+                }
             }
         }
     }
@@ -342,6 +401,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         warnBtn = W.iconButton(this, Icon.WARNING, "Warnings") { Sheets.warnings(this) }
         topBar.addView(warnBtn)
         topBar.addView(W.iconButton(this, Icon.LAYERS, "Map layers") { Sheets.layers(this) })
+        topBar.addView(W.iconButton(this, Icon.SHARE, "Share a picture of the map") { shareScreenshot() })
         topBar.addView(W.iconButton(this, Icon.SLIDERS, "Settings") { Sheets.settings(this) })
         root.addView(topBar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
 
@@ -371,6 +431,8 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         }
         loopRow.addView(loopSeek, LinearLayout.LayoutParams(0, -2, 1f))
         loopRow.addView(W.iconButton(this, Icon.CLOSE, "Stop loop") { stopLoop() })
+        buildToolCard()
+        bottomBar.addView(toolCard)
         bottomBar.addView(loopRow)
 
         productRow = W.hRow(this).apply { setPadding(dpi(8f), dpi(4f), dpi(8f), dpi(4f)) }
@@ -394,7 +456,10 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         tools.addView(panelsBtn)
         loopBtn = W.iconButton(this, Icon.PLAY, "Loop") { toggleLoop() }
         tools.addView(loopBtn)
-        tools.addView(W.iconButton(this, Icon.LOCATE, "My location") { locateMe() })
+        toolBtn = W.iconButton(this, Icon.RULER, "Measure distance / storm track") { if (overlay.tool == OverlayView.Tool.NONE) openTools() else closeTools() }
+        tools.addView(toolBtn)
+        locateBtn = W.iconButton(this, Icon.LOCATE, "My location (tap again to stop following)") { locateMe() }
+        tools.addView(locateBtn)
         barRow.addView(tools)
         bottomBar.addView(barRow, LinearLayout.LayoutParams(-1, -2))
         arrangeBottomBar()
@@ -413,6 +478,156 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     private lateinit var barRow: LinearLayout
     private lateinit var productScroll: HorizontalScrollView
     private lateinit var toolsRow: LinearLayout
+    private lateinit var toolBtn: IconView
+    private lateinit var locateBtn: IconView
+
+    // ---------------------------------------------------------------- measuring tools
+    private lateinit var toolCard: LinearLayout
+    private lateinit var toolDistChip: W.Chip
+    private lateinit var toolTrackChip: W.Chip
+    private lateinit var toolText: TextView
+    private lateinit var toolTrackRow: LinearLayout
+    private lateinit var toolTrackScroll: HorizontalScrollView
+    private lateinit var toolMinutesChip: W.Chip
+    private var lastTool = OverlayView.Tool.DISTANCE
+
+    private fun buildToolCard() {
+        toolCard = W.vCol(this).apply {
+            setPadding(dpi(10f), dpi(2f), dpi(4f), dpi(4f))
+            visibility = View.GONE
+        }
+        val row = W.hRow(this)
+        toolDistChip = W.chip(this, "Distance") { overlay.setTool(OverlayView.Tool.DISTANCE) }
+        toolTrackChip = W.chip(this, "Storm track") { overlay.setTool(OverlayView.Tool.TRACK) }
+        row.addView(toolDistChip, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dpi(6f) })
+        row.addView(toolTrackChip, LinearLayout.LayoutParams(-2, -2))
+        row.addView(W.weightSpace(this))
+        row.addView(W.iconButton(this, Icon.UNDO, "Undo the last point") { overlay.undoTool() })
+        row.addView(W.iconButton(this, Icon.TRASH, "Clear") { overlay.clearTool() })
+        row.addView(W.iconButton(this, Icon.CLOSE, "Close the measuring tools") { closeTools() })
+        toolCard.addView(row, LinearLayout.LayoutParams(-1, -2))
+        toolText = W.text(this, "", 13.5f, C.text).apply {
+            setLineSpacing(0f, 1.18f)
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(dpi(2f), dpi(2f), dpi(8f), dpi(4f))
+        }
+        toolCard.addView(toolText, LinearLayout.LayoutParams(-1, -2))
+        toolTrackRow = W.hRow(this).apply { setPadding(0, dpi(2f), 0, dpi(2f)) }
+        toolMinutesChip = W.chip(this, "${prefs.trackMinutes} min") {
+            val list = Prefs.TRACK_MINUTES
+            val next = list[(list.indexOf(prefs.trackMinutes) + 1) % list.size]
+            prefs.trackMinutes = next
+            overlay.setTrackMinutes(next)
+        }
+        toolTrackRow.addView(toolMinutesChip, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dpi(6f) })
+        toolTrackRow.addView(W.chip(this, "Use for SRV") { useTrackForSrv() }, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dpi(6f) })
+        toolTrackRow.addView(W.chip(this, "Reset motion") {
+            val a = overlay.trackA ?: return@chip
+            overlay.setTrackEnd(trackEndFor(a, overlay.trackMinutes))
+        }, LinearLayout.LayoutParams(-2, -2))
+        toolTrackScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(toolTrackRow); visibility = View.GONE }
+        toolCard.addView(toolTrackScroll, LinearLayout.LayoutParams(-1, -2))
+    }
+
+    private fun openTools() {
+        hideKeyboardSheets()
+        overlay.hideInspector()
+        toolCard.visibility = View.VISIBLE
+        overlay.setTool(lastTool)
+        if (overlay.trackMinutes != prefs.trackMinutes) overlay.setTrackMinutes(prefs.trackMinutes)
+        onToolChanged()
+    }
+
+    fun closeTools() {
+        if (overlay.tool != OverlayView.Tool.NONE) lastTool = overlay.tool
+        overlay.resetTools()
+        overlay.setTool(OverlayView.Tool.NONE)
+        toolCard.visibility = View.GONE
+        toolBtn.setTint(C.text)
+    }
+
+    private fun hideKeyboardSheets() { if (sheets.isOpen) sheets.close() }
+
+    override fun onToolChanged() {
+        if (!::toolBtn.isInitialized) return
+        val t = overlay.tool
+        toolDistChip.selectedState = t == OverlayView.Tool.DISTANCE
+        toolTrackChip.selectedState = t == OverlayView.Tool.TRACK
+        toolBtn.setTint(if (t != OverlayView.Tool.NONE) C.accent else C.text)
+        toolTrackScroll.visibility = if (t == OverlayView.Tool.TRACK && overlay.trackA != null) View.VISIBLE else View.GONE
+        toolMinutesChip.text = "${overlay.trackMinutes} min"
+        // a fixed number of lines per tool, so the bar (and the map) doesn't jump while dragging
+        val lines = if (t == OverlayView.Tool.TRACK) 3 else 2
+        if (toolText.minLines != lines || toolText.maxLines != lines) toolText.setLines(lines)
+        toolText.text = when (t) {
+            OverlayView.Tool.DISTANCE -> distanceText()
+            OverlayView.Tool.TRACK -> trackText()
+            OverlayView.Tool.NONE -> ""
+        }
+    }
+
+    private fun distanceText(): String {
+        val legs = overlay.rulerLegs()
+        val u = prefs.distUnits
+        return when {
+            overlay.ruler.isEmpty() -> "Tap the map to start measuring."
+            legs.isEmpty() -> "Tap another point. Drag a point to move it."
+            else -> {
+                val last = legs.last()
+                val line1 = "${Geo.distText(last.first, u)}  ·  ${Geo.compass(last.second)} (${last.second.toInt()}°)"
+                if (legs.size == 1) line1 + "\nTap to add more points; drag a point to move it."
+                else line1 + "\nTotal ${Geo.distText(legs.sumOf { it.first }, u)} over ${legs.size} legs"
+            }
+        }
+    }
+
+    private fun trackText(): String {
+        val m = overlay.trackMotion() ?: return "Tap a storm to place it, then drag the yellow arrowhead to where it's heading " +
+            "(the arrow is ${overlay.trackMinutes} minutes of travel)."
+        val (kmh, heading) = m
+        val from = (heading + 180) % 360
+        val now = System.currentTimeMillis()
+        fun whenText(min: Double): String {
+            val t = overlay.trackStartMs + (min * 60_000).toLong()
+            val inMin = Math.round((t - now) / 60_000.0)
+            return "${Time.local(t)} (" + (if (inMin > 0) "in $inMin min" else if (inMin == 0L) "now" else "passed") + ")"
+        }
+        val sb = StringBuilder()
+        sb.append("Moving ${Geo.compass(heading)} at ${Geo.speedText(kmh, prefs.velUnits)}  ·  from ${Math.round(from)}°")
+        val loc = overlay.locationKm
+        val a = overlay.trackA; val b = overlay.trackB
+        if (loc != null && a != null && b != null) {
+            val eta = com.libexil.radarforge.core.Measure.etaAt(a[0], a[1], b[0], b[1], overlay.trackMinutes.toDouble(), loc[0], loc[1], overlay.trackHalfWidthKm)
+            sb.append("\nYou: ").append(if (eta != null) whenText(eta) else "not in its path")
+        } else {
+            sb.append("\nYou: location off")
+        }
+        val etas = overlay.trackEtas
+        if (etas.isEmpty()) sb.append("\nNo towns on this track in the next ${overlay.trackMinutes} min.")
+        else sb.append("\n").append(etas.take(2).joinToString("  ·  ") { "${it.name} ${whenText(it.minutes)}" })
+        return sb.toString()
+    }
+
+    override fun trackEndFor(startKm: FloatArray, minutes: Int): FloatArray {
+        val g = geo ?: return floatArrayOf(startKm[0] + 40f, startKm[1] + 20f)
+        val ll = g.proj.inverse(startKm[0].toDouble(), startKm[1].toDouble())
+        val heading = (prefs.stormDir + 180.0) % 360.0
+        val kts = if (prefs.stormKts >= 1f) prefs.stormKts.toDouble() else 30.0
+        val d = Geo.destination(ll[0], ll[1], heading, kts * 1.852 * minutes / 60.0)
+        val xy = FloatArray(2)
+        g.proj.forward(d[0], d[1], xy, 0)
+        return xy
+    }
+
+    private fun useTrackForSrv() {
+        val (kmh, heading) = overlay.trackMotion() ?: return
+        val from = (Math.round(((heading + 180) % 360) / 5.0) * 5 % 360).toFloat()
+        val kts = Math.round(kmh / 1.852).toFloat().coerceIn(0f, 80f)
+        prefs.stormDir = from
+        prefs.stormKts = kts
+        settingsChanged()
+        toast("SRV storm motion set to ${from.toInt()}° at ${kts.toInt()} kts")
+    }
 
     /** Portrait: products above the tools. Landscape: one row, so the map keeps its height. */
     private fun arrangeBottomBar() {
@@ -546,6 +761,88 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     override fun onAlerts() {
         rebuildAlerts()
         rebuild()
+        checkWarningsAtLocation()
+    }
+
+    override fun onFeed(name: String) {
+        when (name) {
+            "reports", "chasers" -> rebuildFeeds()
+            "outlook", "mcd" -> { rebuildSpc(); rebuild() }
+        }
+    }
+
+    // ---------------------------------------------------------------- storm reports, chasers, SPC
+    /** Projects storm reports and chaser positions near the radar for the overlay. */
+    fun rebuildFeeds() {
+        val g = geo
+        if (g == null) {
+            overlay.reports = emptyList(); overlay.chasers = emptyList(); visibleReports = emptyList()
+            overlay.invalidate()
+            return
+        }
+        val s = g.site
+        val maxKm = 1500.0
+        val cut = System.currentTimeMillis() - prefs.reportHours * 3_600_000L
+        val reps = if (prefs.layer("reports")) dm.reports.filter {
+            prefs.reportGroup(it.kind.group) && (it.timeMs == 0L || it.timeMs >= cut) && Geo.distanceKm(s.lat, s.lon, it.lat, it.lon) < maxKm
+        } else emptyList()
+        val rxy = FloatArray(reps.size * 2)
+        for ((k, r) in reps.withIndex()) g.proj.forward(r.lat, r.lon, rxy, 2 * k)
+        val chs = if (prefs.layer("chasers")) dm.chasers.filter { Geo.distanceKm(s.lat, s.lon, it.lat, it.lon) < maxKm } else emptyList()
+        val cxy = FloatArray(chs.size * 2)
+        for ((k, c) in chs.withIndex()) g.proj.forward(c.lat, c.lon, cxy, 2 * k)
+        visibleReports = reps
+        overlay.reports = reps; overlay.reportXY = rxy; overlay.reportHours = prefs.reportHours
+        overlay.chasers = chs; overlay.chaserXY = cxy; overlay.chaserNames = prefs.chaserNames
+        overlay.invalidate()
+    }
+
+    /** SPC outlook outlines + labels and mesoscale discussion outlines, projected around the radar. */
+    fun rebuildSpc() {
+        val g = geo
+        if (g == null) { spcLayers = emptyList(); overlay.outlookLabels = emptyList(); overlay.mcds = emptyList(); return }
+        val d = resources.displayMetrics.density
+        val s = g.site
+        val out = ArrayList<LayerDraw>()
+        val labels = ArrayList<OverlayView.MapLabel>()
+        fun nearRadar(minLat: Float, maxLat: Float, minLon: Float, maxLon: Float) =
+            Geo.distanceKm(s.lat, s.lon, s.lat.coerceIn(minLat.toDouble(), maxLat.toDouble()), s.lon.coerceIn(minLon.toDouble(), maxLon.toDouble())) < 2200
+        if (prefs.layer("outlook")) {
+            val cats = dm.outlook.filter { it.category == "CATEGORICAL" && Spc.catIndex(it.threshold) >= 0 }.sortedBy { Spc.catIndex(it.threshold) }
+            val xy = FloatArray(2)
+            for (a in cats) {
+                val color = Spc.CAT_COLOR[a.threshold] ?: continue
+                val rings = a.rings.filter { r -> val b = Geo.ringsBox(listOf(r)); nearRadar(b[0], b[1], b[2], b[3]) }
+                if (rings.isEmpty()) continue
+                out.add(LayerDraw(ProjectedLayer.fromRings(rings, g.proj), color, 2f * d, halo = true))
+                for (r in rings) {
+                    val b = Geo.ringsBox(listOf(r))
+                    if (Geo.distanceKm(b[0].toDouble(), b[2].toDouble(), b[1].toDouble(), b[3].toDouble()) < 80) continue   // too small to label
+                    // label in the middle of the ring if that's inside it, else just inside its northernmost point
+                    var lat = (b[0] + b[1]) / 2.0; var lon = (b[2] + b[3]) / 2.0
+                    if (!a.contains(lat, lon)) {
+                        var k = 1; var best = -999f; var bi = 0
+                        while (k < r.size) { if (r[k] > best) { best = r[k]; bi = k - 1 }; k += 2 }
+                        lat = r[bi + 1] - 0.25; lon = r[bi].toDouble()
+                    }
+                    g.proj.forward(lat, lon, xy, 0)
+                    labels.add(OverlayView.MapLabel(a.threshold, color, xy[0], xy[1]))
+                }
+            }
+        }
+        val mcds = if (prefs.layer("mcd")) dm.mcds.filter { nearRadar(it.minLat, it.maxLat, it.minLon, it.maxLon) } else emptyList()
+        val mxy = FloatArray(mcds.size * 2)
+        for ((k, m) in mcds.withIndex()) {
+            out.add(LayerDraw(ProjectedLayer.fromRings(m.rings, g.proj), Spc.MCD_COLOR, 2.2f * d, halo = true))
+            // label above the northernmost point
+            var best = -999f; var bi = 0
+            for (r in m.rings) { var i = 1; while (i < r.size) { if (r[i] > best) { best = r[i]; bi = i - 1; g.proj.forward(r[i].toDouble(), r[i - 1].toDouble(), mxy, 2 * k) }; i += 2 } }
+        }
+        spcLayers = out
+        overlay.outlookLabels = labels
+        overlay.mcds = mcds
+        overlay.mcdXY = mxy
+        overlay.invalidate()
     }
 
     override fun onStatus(text: String, busy: Boolean, error: Boolean) {
@@ -721,8 +1018,9 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             loopTime.text = if (t != null) "${Time.local(t)}  ${idx + 1}/$n" else "${idx + 1}/$n"
         }
 
-        renderer.scene = Scene(C.mapBg, C.mapGap, layers, alertLayers, panelDraws, keep)
+        renderer.scene = Scene(C.mapBg, C.mapGap, layers, if (spcLayers.isEmpty()) alertLayers else spcLayers + alertLayers, panelDraws, keep)
         overlay.panels = infos
+        overlay.dataTimeMs = infos.getOrNull(state.activePanel)?.field?.sweepMs ?: infos.firstOrNull()?.field?.sweepMs ?: 0L
         overlay.showCities = prefs.layer("cities")
         overlay.showSites = prefs.layer("sites")
         overlay.invalidate()
@@ -736,6 +1034,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
 
     override fun onSiteTapped(site: Site) {
         if (site.id == this.site?.id) return
+        stopFollowing()
         selectSite(site, resetView = true)
         toast("Switched to ${site.id} – ${site.title}")
     }
@@ -752,10 +1051,65 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         }
     }
 
+    override fun onReportsTapped(reports: List<StormReport>) {
+        if (reports.size == 1) Sheets.reportDetail(this, reports[0]) else Sheets.reportList(this, reports, "Storm reports here")
+    }
+
+    override fun onChasersTapped(chasers: List<Chaser>) {
+        if (chasers.size == 1) Sheets.chaserDetail(this, chasers[0]) else Sheets.chaserList(this, chasers)
+    }
+
+    override fun onMcdTapped(mcds: List<MesoDiscussion>) {
+        Sheets.mcdDetail(this, mcds[0])
+    }
+
+    override fun onMapTapped(lat: Double, lon: Double): Boolean {
+        if (!prefs.layer("outlook") || dm.outlook.isEmpty()) return false
+        val hits = dm.outlook.filter { it.contains(lat, lon) }
+        if (hits.none { it.category == "CATEGORICAL" }) return false
+        Sheets.outlookDetail(this, lat, lon, hits)
+        return true
+    }
+
+    override fun onUserMovedMap() {
+        if (following) setFollowing(false)
+    }
+
     private var pendingZoom: Alert? = null
+    private var pendingCenter: DoubleArray? = null
+
+    /** Goes to a point (a storm report, a chaser): switches to the nearest radar when it's far away, then centres on it. */
+    fun goToPoint(lat: Double, lon: Double) {
+        val g = geo
+        val far = g == null || Geo.distanceKm(g.site.lat, g.site.lon, lat, lon) > 230
+        if (far && prefs.goToNearestRadar) {
+            val n = Sites.nearest(sites, lat, lon)
+            if (n != null && n.id != site?.id) {
+                setFollowing(false)
+                pendingCenter = doubleArrayOf(lat, lon)
+                selectSite(n)
+                toast("Switched to ${n.id} – the nearest radar")
+                return
+            }
+        }
+        setFollowing(false)
+        centerOn(lat, lon)
+    }
+
+    /** Centres the map on (lat, lon), zooming in a little if the view is wide. */
+    fun centerOn(lat: Double, lon: Double, zoomIn: Boolean = true) {
+        val g = geo ?: return
+        val xy = FloatArray(2)
+        g.proj.forward(lat, lon, xy, 0)
+        state.cx = xy[0]; state.cy = xy[1]
+        if (zoomIn && state.scale < 2.5f) state.scale = 2.5f
+        overlay.invalidate()
+        requestRender()
+    }
 
     /** Goes to a warning: switches to the radar nearest it (when that setting is on), then zooms in. */
     fun goToAlert(a: Alert) {
+        stopFollowing()
         if (prefs.goToNearestRadar) {
             val lat = (a.minLat + a.maxLat) / 2.0
             val lon = (a.minLon + a.maxLon) / 2.0
@@ -800,11 +1154,20 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     fun hasLocationPermission() = checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
         checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
+    fun requestLocationPermission() =
+        requestPermissions(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION), REQ_LOCATION_LIVE)
+
     private fun locateMe() {
         if (!hasLocationPermission()) {
             requestPermissions(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION), REQ_LOCATION_CENTER)
             return
         }
+        if (following) {
+            setFollowing(false)
+            toast("Stopped following your location")
+            return
+        }
+        setFollowing(true)
         withLocation { loc ->
             val g = geo ?: return@withLocation
             val d = Geo.distanceKm(loc.latitude, loc.longitude, g.site.lat, g.site.lon)
@@ -891,6 +1254,121 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     private fun setLocation(loc: Location) {
         lastLocation = loc
         updateLocationKm()
+        if (overlay.tool == OverlayView.Tool.TRACK) onToolChanged()      // "You: ..." arrival time
+    }
+
+    // ---------------------------------------------------------------- live location, following
+    var following = false
+        private set
+    private var liveListener: LocationListener? = null
+
+    private fun setFollowing(on: Boolean) {
+        if (following == on) return
+        following = on
+        if (::locateBtn.isInitialized) locateBtn.setTint(if (on) C.accent else C.text)
+        // following uses GPS; otherwise the cheaper network location is enough for the dot
+        stopLiveLocation()
+        startLiveLocation()
+    }
+
+    /** The user went somewhere else on purpose (picked a radar, opened a warning): stop following. */
+    fun stopFollowing() {
+        if (following) {
+            setFollowing(false)
+            toast("Stopped following your location")
+        }
+    }
+
+    /** Keeps the location dot current while the app is open (Settings → My location), and while following. */
+    @SuppressLint("MissingPermission")
+    fun startLiveLocation() {
+        if (liveListener != null || !hasLocationPermission() || !(prefs.liveLocation || following)) return
+        val lm = locationManager ?: (getSystemService(LOCATION_SERVICE) as LocationManager).also { locationManager = it }
+        val l = object : LocationListener {
+            override fun onLocationChanged(loc: Location) = onLiveLocation(loc)
+            @Deprecated("Deprecated in Java")
+            override fun onStatusChanged(p: String?, s: Int, b: Bundle?) {}
+            override fun onProviderEnabled(p: String) {}
+            override fun onProviderDisabled(p: String) {}
+        }
+        val fine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        fun enabled(p: String) = try { lm.isProviderEnabled(p) } catch (_: Exception) { false }
+        // GPS while following (or when there's no network location); network location otherwise
+        val providers = ArrayList<String>()
+        if (fine && (following || !enabled(LocationManager.NETWORK_PROVIDER))) providers.add(LocationManager.GPS_PROVIDER)
+        providers.add(LocationManager.NETWORK_PROVIDER)
+        var any = false
+        for (p in providers) {
+            try {
+                if (!enabled(p)) continue
+                lm.requestLocationUpdates(p, if (following) 5_000L else 30_000L, if (following) 15f else 100f, l, Looper.getMainLooper())
+                any = true
+            } catch (e: Exception) {
+                RfLog.w("live location ($p) failed: ${e.message}")
+            }
+        }
+        if (any) liveListener = l
+    }
+
+    fun stopLiveLocation() {
+        val l = liveListener ?: return
+        liveListener = null
+        try { locationManager?.removeUpdates(l) } catch (_: Exception) {}
+    }
+
+    private fun onLiveLocation(loc: Location) {
+        // a coarse network fix shouldn't replace a recent, much better GPS fix
+        val prev = lastLocation
+        if (prev != null && loc.time - prev.time < 20_000 && loc.hasAccuracy() && prev.hasAccuracy() &&
+            loc.accuracy > prev.accuracy * 3 && loc.provider != prev.provider) return
+        setLocation(loc)
+        checkWarningsAtLocation()
+        if (!following) return
+        val g = geo
+        if (prefs.autoSwitchRadar && g != null) {
+            val n = Sites.nearest(sites, loc.latitude, loc.longitude)
+            if (n != null && n.id != g.site.id &&
+                Geo.distanceKm(loc.latitude, loc.longitude, g.site.lat, g.site.lon) - Geo.distanceKm(loc.latitude, loc.longitude, n.lat, n.lon) > 30) {
+                toast("Switched to ${n.id} – now the nearest radar")
+                selectSite(n)            // centres on you again once its map is ready
+                return
+            }
+        }
+        centerOn(loc.latitude, loc.longitude, zoomIn = false)
+    }
+
+    // ---------------------------------------------------------------- warning for my location
+    /** Warnings already opened for your location (kept across restarts until they expire). */
+    private val notified: MutableMap<String, Pair<Float, Long>> by lazy { prefs.notifiedWarnings.toMutableMap() }
+
+    /**
+     * Opens a tornado / severe / flash flood warning that covers where you are (and vibrates):
+     * once per warning, and again only if it's upgraded (e.g. to a PDS or emergency).
+     */
+    private fun checkWarningsAtLocation() {
+        if (!prefs.warnAtLocation || !prefs.layer("warnings")) return
+        val loc = lastLocation ?: return
+        val now = System.currentTimeMillis()
+        if (now - loc.time > 30 * 60_000L) return
+        fun prio(a: Alert) = Alerts.VARIANTS[a.variant]?.priority ?: 0f
+        val hits = dm.alerts.filter {
+            !it.isWatch && Alerts.group(it.event) in setOf("tornado", "severe", "flood") && it.action !in setOf("CAN", "EXP") &&
+                (it.expiresMs == 0L || it.expiresMs > now) && it.contains(loc.latitude, loc.longitude)
+        }
+        val fresh = hits.filter { h -> notified[h.trackKey].let { it == null || prio(h) > it.first } }
+        if (fresh.isEmpty()) return
+        notified.entries.removeAll { it.value.second < now - 3_600_000L }
+        for (h in hits) {
+            val old = notified[h.trackKey]
+            notified[h.trackKey] = maxOf(prio(h), old?.first ?: 0f) to (if (h.expiresMs > 0) h.expiresMs else now + 2 * 3_600_000L)
+        }
+        prefs.notifiedWarnings = notified
+        val top = fresh.maxByOrNull { prio(it) } ?: return
+        try {
+            @Suppress("DEPRECATION")
+            (getSystemService(VIBRATOR_SERVICE) as? Vibrator)?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 450, 200, 450, 200, 450), -1))
+        } catch (_: Exception) {}
+        if (!sheets.isOpen) Sheets.alertDetail(this, top, forYou = true) else toast("${top.variantLabel} for your location")
     }
 
     private fun updateLocationKm() {
@@ -906,9 +1384,92 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         val granted = grantResults.any { it == PackageManager.PERMISSION_GRANTED }
         if (!granted) return
+        startLiveLocation()
         when (requestCode) {
             REQ_LOCATION_NEAREST -> pickNearestRadar()
             REQ_LOCATION_CENTER -> locateMe()
+        }
+    }
+
+    // ---------------------------------------------------------------- share a picture of the map
+    private var sharing = false
+
+    /** Captures the map (radar + overlay) and opens the share sheet. */
+    fun shareScreenshot() {
+        if (sharing) return
+        sharing = true
+        renderer.capture = { bmp -> main.post { finishScreenshot(bmp) } }
+        requestRender()
+        main.postDelayed({ if (sharing) { sharing = false; renderer.capture = null; toast("Couldn't capture the map") } }, 4000)
+    }
+
+    private fun finishScreenshot(full: Bitmap?) {
+        if (!sharing) { full?.recycle(); return }
+        sharing = false
+        if (full == null) { toast("Couldn't capture the map"); return }
+        try {
+            val a = state.area
+            val left = a.left.toInt().coerceIn(0, full.width - 1)
+            val top = a.top.toInt().coerceIn(0, full.height - 1)
+            val w = a.width().toInt().coerceAtMost(full.width - left)
+            val h = a.height().toInt().coerceAtMost(full.height - top)
+            val d = resources.displayMetrics.density
+            val t = overlay.dataTimeMs.takeIf { it > 0 } ?: System.currentTimeMillis()
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 12.5f * resources.displayMetrics.scaledDensity }
+            val left1 = "RadarForge  ·  ${site?.id ?: ""}  ·  ${Time.ymd(t)} ${Time.hmZ(t)}"
+            val right1 = "Not an official warning source"
+            val oneLine = p.measureText(left1) + p.measureText(right1) * 1.08f + 30 * d < w
+            val line = p.fontSpacing
+            val footer = ((if (oneLine) 1 else 2) * line + 10 * d).toInt()
+            val out = Bitmap.createBitmap(w, h + footer, Bitmap.Config.ARGB_8888)
+            val c = Canvas(out)
+            c.drawBitmap(full, android.graphics.Rect(left, top, left + w, top + h), android.graphics.Rect(0, 0, w, h), null)
+            full.recycle()
+            // labels, legend, warnings text etc. drawn by the overlay, shifted so the map area starts at 0,0
+            c.save()
+            c.clipRect(0, 0, w, h)
+            c.translate(-left.toFloat(), -top.toFloat())
+            overlay.draw(c)
+            c.restore()
+            p.color = C.panel
+            c.drawRect(0f, h.toFloat(), w.toFloat(), (h + footer).toFloat(), p)
+            p.color = C.dim
+            val base = h + 5 * d - p.fontMetrics.ascent
+            c.drawText(left1, 10 * d, base, p)
+            p.typeface = Typeface.DEFAULT_BOLD
+            if (oneLine) {
+                p.textAlign = Paint.Align.RIGHT
+                c.drawText(right1, w - 10 * d, base, p)
+            } else {
+                c.drawText(right1, 10 * d, base + line, p)
+            }
+            val name = "RadarForge-${site?.id ?: "map"}-${Time.iso(t).replace(Regex("[^0-9]"), "").take(12)}.png"
+            // encoding a full-screen PNG takes a moment: off the main thread
+            worker.execute {
+                try {
+                    val dir = java.io.File(cacheDir, "shots").apply { mkdirs() }
+                    dir.listFiles()?.forEach { it.delete() }                 // only ever keep the newest
+                    java.io.File(dir, name).outputStream().use { out.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    out.recycle()
+                    main.post {
+                        val uri = Uri.parse("content://${ShotProvider.AUTHORITY}/$name")
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "image/png"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            clipData = ClipData.newRawUri(name, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        try { startActivity(Intent.createChooser(send, "Share the radar picture")) }
+                        catch (e: Exception) { toast("No app to share with") }
+                    }
+                } catch (e: Throwable) {
+                    RfLog.e("screenshot save failed", e)
+                    main.post { toast("Couldn't save the picture: ${e.message ?: e.javaClass.simpleName}") }
+                }
+            }
+        } catch (e: Throwable) {
+            RfLog.e("screenshot failed", e)
+            toast("Couldn't share the picture: ${e.message ?: e.javaClass.simpleName}")
         }
     }
 
@@ -954,6 +1515,9 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     companion object {
         const val REQ_LOCATION_NEAREST = 11
         const val REQ_LOCATION_CENTER = 12
+        const val REQ_LOCATION_LIVE = 13
         const val REQ_IMPORT_PAL = 21
+        /** Bump to show the "what's new" sheet once after an update. */
+        const val WHATS_NEW = "1.3.0"
     }
 }

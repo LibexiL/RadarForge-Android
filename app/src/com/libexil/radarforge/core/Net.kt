@@ -35,9 +35,9 @@ object Net {
         return if ("gzip".equals(c.contentEncoding, true)) java.util.zip.GZIPInputStream(s) else s
     }
 
-    fun getBytes(url: String, timeoutMs: Int = 30_000, accept: String? = null): ByteArray {
+    fun getBytes(url: String, timeoutMs: Int = 30_000, accept: String? = null, attempts: Int = 3): ByteArray {
         var last: IOException? = null
-        for (attempt in 0 until 3) {
+        for (attempt in 0 until attempts) {
             try {
                 val c = open(url, timeoutMs, accept = accept)
                 try {
@@ -51,13 +51,13 @@ object Net {
             } catch (e: IOException) {
                 last = e
             }
-            Thread.sleep(400L * (attempt + 1))
+            if (attempt + 1 < attempts) Thread.sleep(400L * (attempt + 1))
         }
         throw last ?: IOException("download failed: $url")
     }
 
-    fun getText(url: String, timeoutMs: Int = 20_000, accept: String? = null): String =
-        String(getBytes(url, timeoutMs, accept), Charsets.UTF_8)
+    fun getText(url: String, timeoutMs: Int = 20_000, accept: String? = null, attempts: Int = 3): String =
+        String(getBytes(url, timeoutMs, accept, attempts), Charsets.UTF_8)
 
     fun readAll(input: InputStream): ByteArray {
         val out = ByteArrayOutputStream()

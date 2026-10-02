@@ -6,6 +6,13 @@ import android.os.Looper
 import com.libexil.radarforge.RfLog
 import com.libexil.radarforge.core.Alert
 import com.libexil.radarforge.core.Alerts
+import com.libexil.radarforge.core.Chaser
+import com.libexil.radarforge.core.Chasers
+import com.libexil.radarforge.core.MesoDiscussion
+import com.libexil.radarforge.core.OutlookArea
+import com.libexil.radarforge.core.Reports
+import com.libexil.radarforge.core.Spc
+import com.libexil.radarforge.core.StormReport
 import com.libexil.radarforge.core.Level2
 import com.libexil.radarforge.core.LoopSupport
 import com.libexil.radarforge.core.Net
@@ -28,7 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *  - the newest complete volume from the archive bucket (shown right away)
  *  - the volume being scanned now, chunk by chunk (new tilts appear as they arrive)
  *  - older volumes for the loop, reading each file only as far as the tilt needs
- *  - NWS warnings
+ *  - NWS warnings, storm reports, storm chaser positions and SPC products ("feeds")
  * Results are published to [listener] on the main thread.
  */
 class DataManager(ctx: Context, private val countyRings: (Int) -> List<FloatArray>) {
@@ -37,6 +44,8 @@ class DataManager(ctx: Context, private val countyRings: (Int) -> List<FloatArra
         fun onFrames()
         fun onAlerts()
         fun onStatus(text: String, busy: Boolean, error: Boolean)
+        /** New data for a feed: "reports", "chasers", "outlook" or "mcd". */
+        fun onFeed(name: String)
     }
 
     class Frame(val key: String, val timeMs: Long, val volume: Volume)
@@ -49,6 +58,8 @@ class DataManager(ctx: Context, private val countyRings: (Int) -> List<FloatArra
     }
     private val pool = Executors.newFixedThreadPool(4, daemon("rf-net"))
     private val sched = Executors.newScheduledThreadPool(2, daemon("rf-poll"))
+    // storm reports, chasers and SPC have their own threads so a slow site never holds up the radar
+    private val feedPool = Executors.newFixedThreadPool(2, daemon("rf-feed"))
     private val cacheDir = File(ctx.cacheDir, "l2").apply { mkdirs() }
 
     @Volatile var site = ""
@@ -101,6 +112,7 @@ class DataManager(ctx: Context, private val countyRings: (Int) -> List<FloatArra
         running = true
         startLive()
         startAlerts()
+        startFeeds()
         // e.g. the app was opened offline: try the newest complete volume again
         if (site.isNotEmpty() && complete == null) {
             val g = gen.get()
@@ -113,12 +125,14 @@ class DataManager(ctx: Context, private val countyRings: (Int) -> List<FloatArra
         running = false
         liveTask?.cancel(false); liveTask = null
         alertTask?.cancel(false); alertTask = null
+        feedTask?.cancel(false); feedTask = null
     }
 
     fun refreshNow() {
         if (!running) return
         startLive()
         startAlerts()
+        startFeeds()
     }
 
     private fun current(g: Int) = g == gen.get()
@@ -343,6 +357,146 @@ class DataManager(ctx: Context, private val countyRings: (Int) -> List<FloatArra
         }, 0, 90, TimeUnit.SECONDS)
     }
 
+    // ------------------------------------------------------------------ feeds: reports, chasers, SPC
+    @Volatile var reports: List<StormReport> = emptyList()
+        private set
+    @Volatile var reportsTime = 0L
+        private set
+    @Volatile var chasers: List<Chaser> = emptyList()
+        private set
+    @Volatile var chasersTime = 0L
+        private set
+    @Volatile var outlook: List<OutlookArea> = emptyList()
+        private set
+    @Volatile var outlookTime = 0L
+        private set
+    @Volatile var mcds: List<MesoDiscussion> = emptyList()
+        private set
+    @Volatile var mcdTime = 0L
+        private set
+
+    // what to fetch (set from the settings on the main thread)
+    @Volatile var wantReports = false
+    @Volatile var reportHours = 6
+    @Volatile var wantSpotterReports = true
+    @Volatile var wantChasers = false
+    @Volatile var chasersActiveOnly = false
+    @Volatile var wantOutlook = false
+    @Volatile var wantMcd = false
+
+    /** A feed fetched every [periodMs] while it's wanted; failures retry sooner. */
+    private inner class Feed(val name: String, val periodMs: Long, val wanted: () -> Boolean, val job: () -> Unit) {
+        @Volatile var due = 0L
+        @Volatile var busy = false
+        @Volatile var failures = 0
+        /** Fetch again as soon as the current fetch ends (its settings changed meanwhile). */
+        @Volatile var again = false
+
+        @Synchronized
+        fun tick(force: Boolean) {
+            if (!running || !wanted() || busy) return
+            if (!force && System.currentTimeMillis() < due) return
+            busy = true
+            again = false
+            try {
+                feedPool.execute {
+                    try {
+                        job()
+                        failures = 0
+                        due = System.currentTimeMillis() + periodMs
+                    } catch (e: Throwable) {
+                        failures++
+                        RfLog.w("$name failed: $e")
+                        due = System.currentTimeMillis() + minOf(periodMs, 20_000L * failures)
+                    } finally {
+                        if (again) { again = false; due = 0 }       // picked up by the next 5-second tick
+                        busy = false
+                    }
+                }
+            } catch (e: Exception) {
+                busy = false          // the pool is shutting down
+            }
+        }
+    }
+
+    private val feeds: Map<String, Feed> = linkedMapOf(
+        "reports" to Feed("storm reports", 120_000L, { wantReports }) { fetchReports() },
+        "chasers" to Feed("storm chasers", 60_000L, { wantChasers }) { fetchChasers() },
+        "outlook" to Feed("SPC outlook", 15 * 60_000L, { wantOutlook }) { fetchOutlook() },
+        "mcd" to Feed("SPC discussions", 3 * 60_000L, { wantMcd }) { fetchMcd() },
+    )
+    private var feedTask: ScheduledFuture<*>? = null
+
+    private fun startFeeds() {
+        feedTask?.cancel(false)
+        feedTask = sched.scheduleWithFixedDelay({ for (f in feeds.values) f.tick(false) }, 0, 5, TimeUnit.SECONDS)
+    }
+
+    /** Fetches a feed now (it was just turned on, or its settings changed). */
+    fun refreshFeed(name: String) {
+        val f = feeds[name] ?: return
+        f.due = 0
+        if (f.busy) f.again = true else f.tick(true)
+    }
+
+    private fun fetchReports() {
+        val hours = reportHours
+        val withSn = wantSpotterReports
+        var error: Throwable? = null
+        val lsr = try { Reports.parseLsr(Net.getText(Reports.lsrUrl(hours), 25_000, "application/geo+json", attempts = 1)) }
+            catch (e: Exception) { error = e; null }
+        val sn = if (!withSn) emptyList() else try { Reports.parseSpotterNetwork(Net.getText(Reports.SN_URL, 15_000, attempts = 1)) }
+            catch (e: Exception) { RfLog.w("Spotter Network reports failed: $e"); null }
+        if (lsr == null && sn == null) throw error ?: IOException("no reports")
+        if (hours != reportHours || withSn != wantSpotterReports) { feeds.getValue("reports").again = true; return }   // settings changed meanwhile
+        val now = System.currentTimeMillis()
+        val cut = now - hours * 3_600_000L
+        // a source that failed this time keeps its previous reports
+        val all = (lsr ?: reports.filter { it.origin != "Spotter Network" }) + (sn ?: reports.filter { it.origin == "Spotter Network" })
+        reports = all.filter { it.timeMs == 0L || it.timeMs >= cut }.sortedByDescending { it.timeMs }
+        reportsTime = now
+        RfLog.i("storm reports: ${reports.size} (${hours} h)")
+        post { listener?.onFeed("reports") }
+    }
+
+    private fun fetchChasers() {
+        val active = chasersActiveOnly
+        val list = Chasers.parse(Net.getText(if (active) Chasers.URL_ACTIVE else Chasers.URL_ALL, 20_000, attempts = 1))
+        if (active != chasersActiveOnly) { feeds.getValue("chasers").again = true; return }
+        chasers = list
+        chasersTime = System.currentTimeMillis()
+        RfLog.i("storm chasers: ${list.size}")
+        post { listener?.onFeed("chasers") }
+    }
+
+    private fun fetchOutlook() {
+        var last: Exception? = null
+        var got: List<OutlookArea>? = null
+        for (url in Spc.outlookUrls(System.currentTimeMillis())) {
+            try {
+                val areas = Spc.parseOutlook(Net.getText(url, 20_000, "application/geo+json", attempts = 1))
+                if (areas.isNotEmpty()) { got = areas; break }
+                if (got == null) got = areas          // not issued yet (or no thunder anywhere): try the one before
+            } catch (e: Exception) {
+                last = e
+            }
+        }
+        val areas = got ?: throw last ?: IOException("no outlook")
+        outlook = areas
+        outlookTime = System.currentTimeMillis()
+        RfLog.i("SPC outlook: ${areas.size} areas")
+        post { listener?.onFeed("outlook") }
+    }
+
+    private fun fetchMcd() {
+        val now = System.currentTimeMillis()
+        val list = Spc.parseMcd(Net.getText(Spc.MCD_URL, 20_000, "application/geo+json", attempts = 1)).filter { it.expireMs == 0L || it.expireMs > now }
+        mcds = list
+        mcdTime = now
+        RfLog.i("SPC discussions: ${list.size}")
+        post { listener?.onFeed("mcd") }
+    }
+
     /** Stops every thread (the activity is going away). */
     fun shutdown() {
         stop()
@@ -350,6 +504,7 @@ class DataManager(ctx: Context, private val countyRings: (Int) -> List<FloatArra
         loopWanted = null
         pool.shutdownNow()
         sched.shutdownNow()
+        feedPool.shutdownNow()
     }
 
     private fun friendly(e: Exception): String = when {

@@ -48,6 +48,16 @@ You need an Android phone or tablet with **Android 8.0 or newer** (almost any ph
   radar nearest the warning.
 - **Inspector:** press and hold anywhere to read the value, the distance and bearing from the radar,
   the beam height and the latitude/longitude.
+- **Measuring tools:** distance and bearing between any points, and a storm track that shows when
+  a storm reaches the towns in its path (and you). The track can set the storm motion for SRV.
+- **Storm reports:** NWS local storm reports and Spotter Network reports (tornado, funnel, wall
+  cloud, hail, wind, flooding) for the last 1–24 hours, fading with age. Tap one to read it.
+- **Storm chasers:** live Spotter Network positions with the direction they're driving.
+- **SPC:** the day 1 convective outlook (tap for tornado / wind / hail chances) and mesoscale
+  discussions (tap to read).
+- **Your location:** follow mode keeps the map on you and switches radars as you travel. The app
+  can also alert you (vibrate and open the warning) when a new warning covers where you are.
+- **Share** a picture of the map, and keep **favourite radars** at the top of the radar list.
 - **Colour tables:** GR-style tables built in, and you can import your own GRLevelX / GR2Analyst
   `.pal` files.
 - **Map:** states, counties, highways, lakes, cities, range rings and every radar site (tap a site to
@@ -61,7 +71,7 @@ You need an Android phone or tablet with **Android 8.0 or newer** (almost any ph
 
 | To | Do this |
 |---|---|
-| Change radar | Tap the radar name at the top, or tap a green square on the map |
+| Change radar | Tap the radar name at the top, or tap a green square on the map. ☆ keeps a radar at the top of the list |
 | Move / zoom | Drag; pinch; double-tap to zoom in |
 | Read a value | Press and hold the map (drag to move the cross-hair, tap to hide it) |
 | Change product | Tap a product along the bottom (BR, BV, SRV, CC, ZDR, SW, PHI) |
@@ -69,8 +79,11 @@ You need an Android phone or tablet with **Android 8.0 or newer** (almost any ph
 | 2 or 4 panels | The panel button; tap a panel to choose its product |
 | Loop | ▶ at the bottom; drag the slider to step through frames, ✕ to stop |
 | Warnings | The ⚠ button at the top (the number counts warnings near the radar) |
-| Map layers | The layers button at the top |
-| Settings | The sliders button: units, storm motion for SRV, loop length and speed, colour tables, warning lines |
+| Map layers | The layers button at the top: map, warnings, storm reports, storm chasers, SPC outlook |
+| Measure | The ruler button: **Distance** (tap points, drag to move them) or **Storm track** (tap a storm, drag the arrowhead) |
+| Follow me | The location button centres the map on you and follows you; tap it again or drag the map to stop |
+| Share | The share button at the top sends a picture of the map |
+| Settings | The sliders button: units, storm motion for SRV, loop, my location, colour tables, warning lines |
 
 **Storm-relative velocity** uses the storm motion set under Settings (default: from 240° at 30 kt).
 
@@ -119,13 +132,18 @@ RadarForge-Android/
 │   ├── AndroidManifest.xml
 │   ├── src/com/libexil/radarforge/
 │   │   ├── MainActivity.kt   main screen, panels, loop, location, colour table import
-│   │   ├── Sheets.kt         radar picker, layers, settings, warnings, tilts, about
+│   │   ├── Sheets.kt         radar picker, layers, settings, warnings, reports, chasers, SPC, about
+│   │   ├── ShotProvider.kt   hands the shared map picture to other apps
 │   │   ├── core/             radar decoding & products – plain Kotlin, tested on the JVM
 │   │   │   ├── Bzip2.kt          bzip2 decoder
 │   │   │   ├── Level2.kt         NEXRAD Level II (message 31 / 1, archive files, live chunks)
 │   │   │   ├── Products.kt       products, tilts, storm-relative velocity
 │   │   │   ├── ColorTable.kt     GRLevelX .pal colour tables
 │   │   │   ├── Alerts.kt         NWS warnings
+│   │   │   ├── Reports.kt        storm reports (IEM local storm reports, Spotter Network)
+│   │   │   ├── Chasers.kt        Spotter Network positions (via Placefile.kt)
+│   │   │   ├── Spc.kt            SPC day 1 outlook and mesoscale discussions
+│   │   │   ├── Measure.kt        distance and storm-track maths
 │   │   │   ├── S3.kt, Net.kt     AWS bucket listings and downloads
 │   │   │   └── Basemap.kt, Geo.kt, RenderData.kt, ...
 │   │   ├── gl/               OpenGL ES 3.0 renderer
@@ -145,8 +163,10 @@ RadarForge-Android/
 ## Credits
 
 Radar data: NOAA NEXRAD Level II on AWS (Unidata real-time chunks and archive). Warnings: National
-Weather Service API. Map data: US Census Bureau, Natural Earth, GeoNames. Radar site list derived from
-Supercell Wx.
+Weather Service API. Storm reports, SPC outlooks and mesoscale discussions: NWS and the Storm
+Prediction Center via the [Iowa Environmental Mesonet](https://mesonet.agron.iastate.edu/). Storm
+chaser positions and spotter reports: [Spotter Network](https://www.spotternetwork.org/) (non-commercial
+use). Map data: US Census Bureau, Natural Earth, GeoNames. Radar site list derived from Supercell Wx.
 
 ## License
 
