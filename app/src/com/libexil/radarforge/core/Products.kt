@@ -102,9 +102,47 @@ class Field(
     val stormU: Float,        // m/s, storm motion for SRV (0 otherwise)
     val stormV: Float,
     val complete: Boolean,
+    /** "" for the radar's own data; otherwise what was done to it (dealiased, Σ trail...), so GPU copies don't mix. */
+    val variant: String = "",
 ) {
     val maxRange: Float get() = firstGate + gateSpacing * (nGates - 0.5f)
-    val key: String = "$site/$volumeMs/$sweepMs/${product.id}/$elevation/$nRays/$stormU/$stormV"
+    val key: String = "$site/$volumeMs/$sweepMs/${product.id}/$elevation/$nRays/$stormU/$stormV" + if (variant.isEmpty()) "" else "/$variant"
+
+    /** Largest code the gate words can hold. */
+    val maxCode: Int get() = if (codes8 != null) 255 else 65535
+
+    /** The same rays and gates with new codes (and product / storm motion / Nyquist as given). */
+    fun withCodes(c8: ByteArray?, c16: CharArray?, variant: String, product: Product = this.product, nyquist: Float = this.nyquist,
+                  stormU: Float = this.stormU, stormV: Float = this.stormV) =
+        Field(product, site, volumeMs, sweepMs, elevation, nRays, nGates, firstGate, gateSpacing, scale, offset,
+            azCenter, azLo, azHi, c8, c16, nyquist, stormU, stormV, complete, variant)
+
+    /** Every gate's value (storm motion removed for SRV); NaN for no echo, +Infinity for range folded. */
+    fun values(): FloatArray {
+        val out = FloatArray(nRays * nGates)
+        val srv = product == Product.SRV && (stormU != 0f || stormV != 0f)
+        for (r in 0 until nRays) {
+            val sub = if (srv) { val a = Math.toRadians(azCenter[r].toDouble()); (stormU * sin(a) + stormV * cos(a)).toFloat() } else 0f
+            val o = r * nGates
+            for (g in 0 until nGates) {
+                val c = if (codes8 != null) codes8[o + g].toInt() and 0xff else codes16!![o + g].code
+                out[o + g] = when (c) { 0 -> Float.NaN; 1 -> Float.POSITIVE_INFINITY; else -> (c - offset) / scale - sub }
+            }
+        }
+        return out
+    }
+
+    /** Codes for [values] in this field's scale (NaN -> 0, +Infinity -> 1, the rest clamped to 2..maxCode). */
+    fun encode(values: FloatArray): Pair<ByteArray?, CharArray?> {
+        val hi = maxCode
+        fun code(v: Float): Int = when {
+            v.isNaN() -> 0
+            v == Float.POSITIVE_INFINITY -> 1
+            else -> Math.round(v * scale + offset).coerceIn(2, hi)
+        }
+        return if (codes8 != null) Pair(ByteArray(values.size) { code(values[it]).toByte() }, null)
+        else Pair(null, CharArray(values.size) { code(values[it]).toChar() })
+    }
 
     fun code(ray: Int, gate: Int): Int {
         val i = ray * nGates + gate

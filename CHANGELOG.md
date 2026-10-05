@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.4.1 – 2026-10-05
+
+* **Fixed: the previous scans downloaded but never showed up**, so the loop stayed empty. Each file was
+  downloaded, then thrown away when saving it to the phone's cache failed (Android refused the temporary
+  file's name). This had also broken loops in 1.3.0, and the newest complete scan from the archive, so
+  switching radars was slower than it should have been: the screen waited for the live feed instead.
+* If the newest scan can't be downloaded, it's tried again after 20 seconds.
+* A test now runs the data loading against a simulated radar server, so this can't slip through again.
+
+## 1.4.0 – 2026-10-05
+
+* **The 10 previous scans load as soon as you pick a radar**, so the loop plays straight away. They load
+  right after the newest scan (which still shows first), and each finished scan joins the loop
+  automatically.
+  * ◀ ▶ in the loop bar step one scan at a time.
+  * Settings → Loop: how many (0–20), and whether to load them on mobile data. On mobile data they load
+    for the lowest tilts (about 2–3 MB a scan); higher tilts load on Wi-Fi, or when you press play.
+  * Changing tilt or product reloads them for what's on screen. Only the part of each file that's
+    missing is downloaded – going up a tilt doesn't fetch the lower ones again.
+* **Themes** (Settings → Theme, or press and hold the settings button): RadarForge Dark, Midnight Blue,
+  GR Classic, Nord, High Contrast and Daylight – the same six as RadarForge for PC – for the app and the map.
+  * An accent colour, and map text size (small to larger).
+  * Follow the phone's dark mode: Daylight in light mode, your dark theme in dark mode.
+  * Changing theme keeps the radar loaded and the map where it was.
+* **Quick switches** at the top of Map layers: warnings, watches, storm reports, chasers, SPC outlook and
+  discussions, counties, highways, cities, range rings, radar sites, colour bar, smoothing, dealiasing,
+  Σ trail and learn mode, one tap each.
+* **Dealias velocity**: unfolds aliased velocity on BV and SRV, with the desktop app's region-based method
+  (worked out in the background; the panel title says "dealiasing…" until it's ready).
+* **Σ max-value trail**: each panel shows the strongest value seen at every spot over the loaded scans,
+  up to the one shown – hail swaths, rotation tracks, debris trails (CC shows its lowest value).
+* **Learn mode** and a **radar guide**: press and hold the map and a card explains the values there in
+  plain words (hail? debris? how strong is that wind? how high is the beam?). The guide covers every
+  product and the classic signatures (Settings → Radar guide).
+* **SPC day 2 and day 3 outlooks** (Map layers); day 3 shows its "any severe" chance.
+* A **coloured dot** by the radar name shows how fresh the data is: green while the radar is scanning or
+  the data is recent, amber after 12 minutes, red after 25. The age stays up to date.
+* **Reload** the radar data from the radar list or Settings.
+* Two-finger tap zooms out, and the map opens where you left it.
+* Warning names, SPC risk names and links stay readable in light and dark themes.
+
 ## 1.3.0 – 2026-10-01
 
 * **Measuring tools** (ruler button at the bottom):

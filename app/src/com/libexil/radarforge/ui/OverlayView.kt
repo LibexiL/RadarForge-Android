@@ -54,6 +54,8 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         fun onToolChanged()
         /** Where a storm placed at [startKm] will be after [minutes] (from the storm motion setting). */
         fun trackEndFor(startKm: FloatArray, minutes: Int): FloatArray
+        /** The inspector cross-hair moved to [km] in panel [panel] (null: hidden). */
+        fun onInspect(km: FloatArray?, panel: Int)
     }
 
     enum class Tool { NONE, DISTANCE, TRACK }
@@ -125,7 +127,11 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
 
     /** Inspector position (km) or null when hidden. */
     var inspectKm: FloatArray? = null
-        private set
+        private set(v) {
+            field = v
+            callbacks?.onInspect(v, inspectPanel)
+        }
+    private var inspectPanel = 0
     private var inspectDragging = false
 
     // ---------------------------------------------------------------- paints
@@ -137,15 +143,15 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
     private val cityHalo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = 12.5f * sp; color = C.halo; style = Paint.Style.STROKE; strokeWidth = 3.2f * density; strokeJoin = Paint.Join.ROUND
     }
-    private val headBold = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 14f * sp; typeface = Typeface.DEFAULT_BOLD; color = C.text }
-    private val headSmall = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 12f * sp; color = 0xffb9bcc6.toInt() }
-    private val legendText = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 10.5f * sp; color = C.text; textAlign = Paint.Align.CENTER }
+    private val headBold = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 14f * sp; typeface = Typeface.DEFAULT_BOLD; color = C.labelText }
+    private val headSmall = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 12f * sp; color = Themes.withAlpha(C.labelText, 0xc0) }
+    private val legendText = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 10.5f * sp; color = C.labelText; textAlign = Paint.Align.CENTER }
     private val siteText = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 11f * sp; typeface = Typeface.DEFAULT_BOLD; color = C.siteText }
     private val siteHalo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = 11f * sp; typeface = Typeface.DEFAULT_BOLD; color = C.halo; style = Paint.Style.STROKE; strokeWidth = 3f * density
     }
-    private val readBig = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 17f * sp; typeface = Typeface.DEFAULT_BOLD; color = C.text }
-    private val readSmall = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 12f * sp; color = 0xffc4c7d0.toInt() }
+    private val readBig = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 17f * sp; typeface = Typeface.DEFAULT_BOLD; color = C.labelText }
+    private val readSmall = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 12f * sp; color = Themes.withAlpha(C.labelText, 0xd0) }
     private val tmpRect = RectF()
     private val occupied = ArrayList<RectF>()
     private val legendBitmaps = IdentityHashMap<ColorTable, Bitmap>()
@@ -214,6 +220,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         override fun onLongPress(e: MotionEvent) {
             val i = state.panelAt(e.x, e.y)
             if (i < 0) return
+            inspectPanel = i
             inspectKm = state.toKm(i, e.x, e.y)
             inspectDragging = true
             performHapticFeedback(HAPTIC_FEEDBACK_ENABLED_LONG_PRESS)
@@ -255,14 +262,47 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
     /** HAPTIC_FEEDBACK_ENABLED_LONG_PRESS isn't public: use the long-press constant. */
     private val HAPTIC_FEEDBACK_ENABLED_LONG_PRESS = android.view.HapticFeedbackConstants.LONG_PRESS
 
+    // two-finger tap: zoom out
+    private var twoDownMs = 0L
+    private var twoMoved = false
+    private val twoStart = FloatArray(4)
+
+    private fun trackTwoFingerTap(e: MotionEvent) {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_POINTER_DOWN -> if (e.pointerCount == 2) {
+                twoDownMs = e.eventTime; twoMoved = false
+                twoStart[0] = e.getX(0); twoStart[1] = e.getY(0); twoStart[2] = e.getX(1); twoStart[3] = e.getY(1)
+            } else twoDownMs = 0L
+            MotionEvent.ACTION_MOVE -> if (twoDownMs > 0 && e.pointerCount >= 2) {
+                if (hypot(e.getX(0) - twoStart[0], e.getY(0) - twoStart[1]) > touchSlop ||
+                    hypot(e.getX(1) - twoStart[2], e.getY(1) - twoStart[3]) > touchSlop) twoMoved = true
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (twoDownMs > 0 && e.pointerCount == 2 && !twoMoved && e.eventTime - twoDownMs < 320) {
+                    val fx = (twoStart[0] + twoStart[2]) / 2; val fy = (twoStart[1] + twoStart[3]) / 2
+                    val i = state.panelAt(fx, fy).coerceAtLeast(0)
+                    var last = 1f
+                    animateFloat(1f, 0.5f, 240) { f ->
+                        state.zoomAt(i, fx, fy, f / last)
+                        last = f
+                        moved()
+                    }
+                }
+                twoDownMs = 0L
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> twoDownMs = 0L
+        }
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        trackTwoFingerTap(e)
         if (tool != Tool.NONE && !inspectDragging && handleDrag(e)) return true
         if (inspectDragging) {
             when (e.actionMasked) {
                 MotionEvent.ACTION_MOVE -> {
                     val i = state.panelAt(e.x, e.y)
-                    if (i >= 0) { inspectKm = state.toKm(i, e.x, e.y); invalidate() }
+                    if (i >= 0) { inspectPanel = i; inspectKm = state.toKm(i, e.x, e.y); invalidate() }
                     return true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -289,6 +329,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
     }
 
     fun hideInspector() {
+        if (inspectKm == null) return
         inspectKm = null
         invalidate()
     }
@@ -635,7 +676,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
             occupied.add(RectF(tmpRect).apply { inset(-3 * density, -2 * density) })
             fill.color = C.halo
             c.drawCircle(x, y, dot + 1.2f * density, fill)
-            fill.color = C.cityText
+            fill.color = C.cityDot
             c.drawCircle(x, y, dot, fill)
             val ty = y - (fm.ascent + fm.descent) / 2
             c.drawText(name, x + dot + 4 * density, ty, cityHalo)
@@ -651,6 +692,19 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         textSize = 11f * sp; typeface = Typeface.DEFAULT_BOLD; color = C.halo; style = Paint.Style.STROKE; strokeWidth = 3f * density
         strokeJoin = Paint.Join.ROUND
     }
+
+    /** Scales every map label (Settings → Theme → Map text size). */
+    var textScale = 1f
+        set(f) {
+            field = f
+            cityPaint.textSize = 12.5f * sp * f; cityHalo.textSize = 12.5f * sp * f
+            headBold.textSize = 14f * sp * f; headSmall.textSize = 12f * sp * f
+            legendText.textSize = 10.5f * sp * f
+            siteText.textSize = 11f * sp * f; siteHalo.textSize = 11f * sp * f
+            readBig.textSize = 17f * sp * f; readSmall.textSize = 12f * sp * f
+            smallLabel.textSize = 11f * sp * f; smallHalo.textSize = 11f * sp * f
+            invalidate()
+        }
     private val path = Path()
 
     private fun inView(r: RectF, x: Float, y: Float, pad: Float) = x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad
@@ -758,7 +812,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
                 fill.color = col
                 c.drawCircle(x, y, rad, fill)
             }
-            if (names) haloText(c, ch.label, x + 11f * density, y + smallLabel.textSize * 0.36f, 0xffe8eef5.toInt())
+            if (names) haloText(c, ch.label, x + 11f * density, y + smallLabel.textSize * 0.36f, C.cityText)
         }
     }
 
@@ -877,7 +931,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         if (p.note != null) {
             y += headSmall.textSize + 4 * density
             val old = headSmall.color
-            headSmall.color = 0xffffc35a.toInt()
+            headSmall.color = C.noteText
             c.drawText(p.note, tmpRect.left + pad, y, headSmall)
             headSmall.color = old
         }
@@ -886,11 +940,12 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
 
     private fun legendBitmap(ct: ColorTable): Bitmap = legendBitmaps.getOrPut(ct) {
         val lut = ct.lut(256)
+        val bg = C.mapBg
         val px = IntArray(256) { i ->
             val a = lut[i * 4 + 3].toInt() and 0xff
             // show the table over the map background so transparent ends read correctly
-            fun ch(k: Int, bg: Int) = ((lut[i * 4 + k].toInt() and 0xff) * a + bg * (255 - a)) / 255
-            (0xff shl 24) or (ch(0, 8) shl 16) or (ch(1, 8) shl 8) or ch(2, 12)
+            fun ch(k: Int, b: Int) = ((lut[i * 4 + k].toInt() and 0xff) * a + b * (255 - a)) / 255
+            (0xff shl 24) or (ch(0, (bg shr 16) and 0xff) shl 16) or (ch(1, (bg shr 8) and 0xff) shl 8) or ch(2, bg and 0xff)
         }
         Bitmap.createBitmap(px, 256, 1, Bitmap.Config.ARGB_8888)
     }
@@ -969,7 +1024,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         if (top < r.top + 4 * density) top = y + a + 14 * density
         left = left.coerceIn(r.left + 4 * density, maxOf(r.left + 4 * density, r.right - w - 4 * density))
         tmpRect.set(left, top, left + w, top + h)
-        fill.color = 0xe6121318.toInt()
+        fill.color = Themes.withAlpha(C.labelBg, maxOf(0xe6, (C.labelBg ushr 24) and 0xff))
         c.drawRoundRect(tmpRect, 9 * density, 9 * density, fill)
         stroke.color = C.border
         stroke.strokeWidth = 1f * density

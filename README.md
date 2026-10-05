@@ -5,8 +5,8 @@ It is a separate app with its own code, built in the spirit of the
 [RadarForge desktop app](https://github.com/LibexiL/RadarForge).
 
 Live Level II data from any of the 160 NEXRAD radars, drawn tilt by tilt while the radar is still
-scanning, with 1, 2 or 4 linked panels, loops, NWS warnings, GR-style colour tables and a dark
-RadarForge look.
+scanning, with 1, 2 or 4 linked panels, loops that are ready the moment you pick a radar, NWS warnings,
+GR-style colour tables, dealiasing, a Σ max-value trail, and the same six themes as RadarForge for PC.
 
 **Contents:** [Install](#install) · [Features](#features) · [Using it](#using-it) ·
 [Building from source](#building-from-source) · [Project layout](#project-layout) · [Changelog](CHANGELOG.md) · [License](#license)
@@ -39,8 +39,17 @@ You need an Android phone or tablet with **Android 8.0 or newer** (almost any ph
 - **Products:** base reflectivity, velocity, storm-relative velocity, spectrum width, ZDR,
   correlation coefficient and differential phase, at every tilt (SAILS rescans included).
 - **1, 2 or 4 linked panels:** pan and zoom move together; each panel shows its own product.
-- **Loop** of the last 4–15 scans. Only the start of each older radar file is downloaded (just enough
-  for the tilt on screen), which keeps mobile-data use down.
+- **Previous scans load straight away**: pick a radar and the 10 scans before the newest load in the
+  background (0–20, your choice), so the loop plays instantly. ◀ ▶ step one scan at a time. Only the start
+  of each older file is downloaded (just enough for the tilt on screen – about 2–3 MB per scan at the lowest
+  tilt). On mobile data they load for the lowest tilts only, or not at all if you prefer (Settings → Loop).
+- **Quick switches**: every layer and radar option as one-tap buttons at the top of Map layers.
+- **Dealias velocity**: unfolds aliased velocity (BV and SRV) with the same region-based method as the
+  desktop app, so strong winds and tight couplets don't flip colour.
+- **Σ max-value trail**: each panel shows the strongest value seen at every spot over the loaded scans –
+  hail swaths from reflectivity, rotation tracks from velocity, debris trails from CC (its lowest value).
+- **Learn mode and radar guide**: press and hold the map and plain-language notes explain the values
+  there (hail? debris? how strong is that wind?); the guide covers every product and the classic signatures.
 - **NWS warnings** (tornado, severe thunderstorm, flash flood, marine, snow squall, special weather
   statements) and **watches**, with tornado and flash flood emergencies highlighted. Tap one to read it.
   Every warning type and threat level (TOR, TORR, TORP, TORE, SVR, SVRC, SVRD, FFW, FFWC, FFWE…) has
@@ -53,7 +62,7 @@ You need an Android phone or tablet with **Android 8.0 or newer** (almost any ph
 - **Storm reports:** NWS local storm reports and Spotter Network reports (tornado, funnel, wall
   cloud, hail, wind, flooding) for the last 1–24 hours, fading with age. Tap one to read it.
 - **Storm chasers:** live Spotter Network positions with the direction they're driving.
-- **SPC:** the day 1 convective outlook (tap for tornado / wind / hail chances) and mesoscale
+- **SPC:** the day 1, 2 or 3 convective outlook (tap for tornado / wind / hail chances) and mesoscale
   discussions (tap to read).
 - **Your location:** follow mode keeps the map on you and switches radars as you travel. The app
   can also alert you (vibrate and open the warning) when a new warning covers where you are.
@@ -62,8 +71,13 @@ You need an Android phone or tablet with **Android 8.0 or newer** (almost any ph
   `.pal` files.
 - **Map:** states, counties, highways, lakes, cities, range rings and every radar site (tap a site to
   switch to it).
-- **Dark theme** matching RadarForge desktop, portrait and landscape layouts, and a crash report you
-  can copy and send if something goes wrong.
+- **Themes:** RadarForge Dark, Midnight Blue, GR Classic, Nord, High Contrast and Daylight – the desktop
+  app's six – for the app and the map, an accent colour, map text size, and an option to follow the
+  phone's dark mode.
+- **Always know how fresh the data is:** a coloured dot by the radar name – green while the radar is
+  scanning or the data is recent, then amber, then red.
+- Portrait and landscape layouts, two-finger tap to zoom out, the map opens where you left it, and a
+  crash report you can copy and send if something goes wrong.
 
 ---
 
@@ -72,18 +86,21 @@ You need an Android phone or tablet with **Android 8.0 or newer** (almost any ph
 | To | Do this |
 |---|---|
 | Change radar | Tap the radar name at the top, or tap a green square on the map. ☆ keeps a radar at the top of the list |
-| Move / zoom | Drag; pinch; double-tap to zoom in |
+| Move / zoom | Drag; pinch; double-tap to zoom in; two-finger tap to zoom out |
 | Read a value | Press and hold the map (drag to move the cross-hair, tap to hide it) |
 | Change product | Tap a product along the bottom (BR, BV, SRV, CC, ZDR, SW, PHI) |
 | Change tilt | The arrows at the bottom left, or tap the tilt to pick from the list |
 | 2 or 4 panels | The panel button; tap a panel to choose its product |
-| Loop | ▶ at the bottom; drag the slider to step through frames, ✕ to stop |
+| Loop | ▶ at the bottom plays the previous scans (already loaded); ◀ ▶ step one scan, drag the slider to scrub, ✕ to stop |
 | Warnings | The ⚠ button at the top (the number counts warnings near the radar) |
-| Map layers | The layers button at the top: map, warnings, storm reports, storm chasers, SPC outlook |
+| Map layers | The layers button at the top: quick switches for everything, then map, warnings, storm reports, storm chasers, SPC outlook (day 1–3) |
+| Dealias / Σ trail / learn mode | Map layers → Quick switches |
+| Theme | Settings → Theme (or press and hold the settings button) |
+| Reload | Radar list → **Reload**, or Settings → Reload radar data |
 | Measure | The ruler button: **Distance** (tap points, drag to move them) or **Storm track** (tap a storm, drag the arrowhead) |
 | Follow me | The location button centres the map on you and follows you; tap it again or drag the map to stop |
 | Share | The share button at the top sends a picture of the map |
-| Settings | The sliders button: units, storm motion for SRV, loop, my location, colour tables, warning lines |
+| Settings | The sliders button: theme, units, storm motion for SRV, previous scans and loop speed, learn mode and the radar guide, my location, colour tables, warning lines |
 
 **Storm-relative velocity** uses the storm motion set under Settings (default: from 240° at 30 kt).
 
@@ -142,16 +159,20 @@ RadarForge-Android/
 │   │   │   ├── Alerts.kt         NWS warnings
 │   │   │   ├── Reports.kt        storm reports (IEM local storm reports, Spotter Network)
 │   │   │   ├── Chasers.kt        Spotter Network positions (via Placefile.kt)
-│   │   │   ├── Spc.kt            SPC day 1 outlook and mesoscale discussions
+│   │   │   ├── Spc.kt            SPC day 1–3 outlooks and mesoscale discussions
+│   │   │   ├── Dealias.kt        region-based velocity dealiasing (same method as the desktop app)
+│   │   │   ├── Trail.kt          Σ max-value trail: resampling and combining scans
+│   │   │   ├── Learn.kt          learn-mode notes and the radar guide
+│   │   │   ├── LoopSupport.kt    previous scans: partial reads, trimming, picking the frames
 │   │   │   ├── Measure.kt        distance and storm-track maths
 │   │   │   ├── S3.kt, Net.kt     AWS bucket listings and downloads
 │   │   │   └── Basemap.kt, Geo.kt, RenderData.kt, ...
 │   │   ├── gl/               OpenGL ES 3.0 renderer
-│   │   ├── ui/               overlay (labels, legend, inspector, gestures), widgets, sheets
-│   │   └── data/             live tracking, loop frames, settings, colour tables
+│   │   ├── ui/               overlay (labels, legend, inspector, gestures), widgets, sheets, themes
+│   │   └── data/             live tracking, previous scans, dealiased / trail fields, settings, colour tables
 │   ├── assets/               map outlines, radar sites, colour tables, shaders
 │   └── res/                  icon, theme
-├── tests/                    JVM tests for the core
+├── tests/                    JVM tests for the core, and DataManager against a simulated S3 (stubs/: the few Android classes it needs)
 ├── tools/
 │   ├── build_assets.py       rebuilds assets/basemap.bin and sites.json from RadarForge desktop's map data
 │   └── glcheck/              renders a radar scene with the app's own shaders in WebGL2 (GLSL ES 3.00)

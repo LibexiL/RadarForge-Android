@@ -77,6 +77,29 @@ object Spc {
         return cands.sortedByDescending { it.first }.take(max).map { it.second }
     }
 
+    /**
+     * Request URLs to try for the day 2 or day 3 outlook, newest first. IEM files them under the date
+     * they cover; that date moves on with the 06 UTC day 1 issuance.
+     */
+    fun outlookUrlsAhead(nowMs: Long, day: Int): List<String> {
+        val utc = TimeZone.getTimeZone("UTC")
+        val cycles = if (day == 3) listOf(20, 19, 8, 7) else listOf(17, 6, 7, 1)
+        val base = Calendar.getInstance(utc).apply {
+            timeInMillis = nowMs
+            if (get(Calendar.HOUR_OF_DAY) < 6) add(Calendar.DAY_OF_MONTH, -1)
+        }
+        val out = ArrayList<String>()
+        for (back in 0..1) {
+            val d = (base.clone() as Calendar).apply { add(Calendar.DAY_OF_MONTH, day - 1 - back) }
+            val date = String.format(Locale.US, "%04d-%02d-%02d", d.get(Calendar.YEAR), d.get(Calendar.MONTH) + 1, d.get(Calendar.DAY_OF_MONTH))
+            for (c in cycles) out.add("https://mesonet.agron.iastate.edu/api/1/nws/spc_outlook.geojson?day=$day&valid=$date&cycle=$c")
+        }
+        return out
+    }
+
+    /** The URLs to try for day [day] (1, 2 or 3), newest first. */
+    fun outlookUrlsFor(nowMs: Long, day: Int): List<String> = if (day <= 1) outlookUrls(nowMs) else outlookUrlsAhead(nowMs, day)
+
     private fun rings(g: Map<String, Any?>): List<FloatArray> {
         val out = ArrayList<FloatArray>()
         fun ring(r: Any?) {

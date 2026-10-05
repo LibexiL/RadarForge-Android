@@ -59,7 +59,9 @@ run_tests() {
   fetch_tools
   say "Compiling the radar core and tests for the JVM"
   rm -rf "$OUT/test" && mkdir -p "$OUT/test"
-  KOTLINC app/src/com/libexil/radarforge/core tests -d "$OUT/test/tests.jar" -jvm-target 17 -nowarn 2>&1 | grep -v '^warning' || true
+  # the core, plus DataManager with stand-ins for the few Android classes it uses (tests/stubs)
+  KOTLINC app/src/com/libexil/radarforge/core app/src/com/libexil/radarforge/data/DataManager.kt \
+      app/src/com/libexil/radarforge/data/ChunkTracker.kt tests -d "$OUT/test/tests.jar" -jvm-target 17 -nowarn 2>&1 | grep -v '^warning' || true
   [ -f "$OUT/test/tests.jar" ] || die "test build failed"
   say "Running tests"
   java -Xmx2g -cp "$OUT/test/tests.jar:$STDLIB" com.libexil.radarforge.tests.TestsKt "$@"

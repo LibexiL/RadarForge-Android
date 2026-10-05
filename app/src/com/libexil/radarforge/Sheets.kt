@@ -29,9 +29,14 @@ import com.libexil.radarforge.core.Spc
 import com.libexil.radarforge.core.StormReport
 import com.libexil.radarforge.core.Time
 import com.libexil.radarforge.data.Prefs
+import com.libexil.radarforge.core.Learn
+import com.libexil.radarforge.core.Product
 import com.libexil.radarforge.ui.C
+import com.libexil.radarforge.ui.ChipGrid
 import com.libexil.radarforge.ui.Icon
 import com.libexil.radarforge.ui.IconView
+import com.libexil.radarforge.ui.Theme
+import com.libexil.radarforge.ui.Themes
 import com.libexil.radarforge.ui.W
 import com.libexil.radarforge.ui.dp
 import com.libexil.radarforge.ui.dpi
@@ -56,11 +61,16 @@ object Sheets {
             setPadding(a.dpi(12f), a.dpi(10f), a.dpi(12f), a.dpi(10f))
         }
         col.addView(search, lp())
-        val near = W.button(a, "Use my location – nearest radar") {
+        val buttons = W.hRow(a)
+        buttons.addView(W.button(a, "Nearest to me") {
             a.sheets.close()
             a.pickNearestRadar()
-        }
-        col.addView(near, lp(top = a.dpi(10f)))
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = a.dpi(8f) })
+        buttons.addView(W.button(a, "Reload ${a.site?.id ?: "data"}") {
+            a.sheets.close()
+            a.reloadData()
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        col.addView(buttons, lp(top = a.dpi(10f)))
         val list = W.vCol(a)
         col.addView(list, lp(top = a.dpi(8f)))
         val loc = a.lastLocation
@@ -134,12 +144,77 @@ object Sheets {
     }
 
     // ------------------------------------------------------------------ layers
+    /** Keeps the quick-switch chips and the switch rows of one sheet showing the same thing. */
+    private class Sync {
+        private val views = HashMap<String, MutableList<(Boolean) -> Unit>>()
+        var busy = false
+        fun on(key: String, update: (Boolean) -> Unit) { views.getOrPut(key) { ArrayList() }.add(update) }
+        fun changed(key: String, value: Boolean) {
+            busy = true
+            try { views[key]?.forEach { it(value) } } finally { busy = false }
+        }
+    }
+
+    /** A switch row tied to [key] in [sync]. */
+    @android.annotation.SuppressLint("UseSwitchCompatOrMaterialCode")
+    private fun syncedSwitch(a: MainActivity, sync: Sync, key: String, label: String, desc: String?,
+                             get: () -> Boolean, set: (Boolean) -> Unit): View {
+        val row = W.switchRow(a, label, desc, get()) { on ->
+            if (sync.busy) return@switchRow
+            set(on)
+            sync.changed(key, on)
+        } as ViewGroup
+        val sw = row.getChildAt(row.childCount - 1) as android.widget.Switch
+        sync.on(key) { v -> if (sw.isChecked != v) sw.isChecked = v }
+        return row
+    }
+
+    /** One-tap switches for everything on the map (the desktop app's Quick panel). */
+    private fun quickSwitches(a: MainActivity, col: LinearLayout, sync: Sync) {
+        val p = a.prefs
+        col.addView(W.section(a, "Quick switches"))
+        val grid = ChipGrid(a)
+        fun sw(label: String, key: String, isOn: () -> Boolean, set: (Boolean) -> Unit) {
+            val chip = W.chip(a, label, isOn()) { c ->
+                set(!isOn())
+                c.selectedState = isOn()
+                sync.changed(key, isOn())
+            }.apply { asTile() }
+            sync.on(key) { v -> chip.selectedState = v }
+            grid.addView(chip)
+        }
+        fun layer(label: String, key: String) = sw(label, "layer:$key", { p.layer(key) }) { p.setLayer(key, it); a.layersChanged() }
+        layer("Warnings", "warnings")
+        sw("Watches", "warn:watch", { p.warnGroup("watch") }) { p.setWarnGroup("watch", it); a.rebuildAlerts(); a.rebuild() }
+        layer("Reports", "reports")
+        layer("Chasers", "chasers")
+        layer("SPC outlook", "outlook")
+        layer("SPC MDs", "mcd")
+        layer("Counties", "counties")
+        layer("Highways", "roads")
+        layer("Cities", "cities")
+        layer("Range rings", "rings")
+        layer("Radar sites", "sites")
+        sw("Colour bar", "legend", { p.showLegend }) { p.showLegend = it; a.settingsChanged() }
+        sw("Smoothing", "smooth", { p.smooth }) { p.smooth = it; a.displayChanged() }
+        sw("Dealias", "dealias", { p.dealias }) { p.dealias = it; a.displayChanged() }
+        sw("Σ Trail", "trail", { p.trail }) { p.trail = it; a.requestLoopFrames(); a.displayChanged() }
+        sw("Learn mode", "learn", { p.learn }) { on ->
+            p.learn = on; a.displayChanged()
+            if (on) a.toast("Press and hold the map to see what the colours mean")
+        }
+        col.addView(grid, lp(top = a.dpi(2f)))
+        col.addView(W.note(a, "Dealias unfolds aliased velocity (BV, SRV). Σ Trail shows the strongest value at each spot over the loaded scans – hail swaths and rotation tracks. Learn mode explains the values when you press and hold."), lp(top = a.dpi(6f)))
+    }
+
     fun layers(a: MainActivity) {
         val p = a.prefs
         val col = W.vCol(a)
+        val sync = Sync()
+        quickSwitches(a, col, sync)
         col.addView(W.section(a, "Map"))
         fun layer(key: String, label: String, desc: String?) =
-            col.addView(W.switchRow(a, label, desc, p.layer(key)) { on -> p.setLayer(key, on); a.layersChanged() })
+            col.addView(syncedSwitch(a, sync, "layer:$key", label, desc, { p.layer(key) }) { on -> p.setLayer(key, on); a.layersChanged() })
         layer("counties", "Counties", null)
         layer("roads", "Highways", null)
         layer("cities", "Cities", null)
@@ -149,7 +224,7 @@ object Sheets {
         layer("warnings", "NWS warnings", "Outlines from the National Weather Service, updated every 90 seconds")
         for ((key, label) in listOf("tornado" to "Tornado", "severe" to "Severe thunderstorm", "flood" to "Flash flood",
             "watch" to "Watches", "other" to "Other (extreme wind, marine, snow squall, dust storm, special statements)")) {
-            col.addView(W.switchRow(a, label, null, p.warnGroup(key)) { on -> p.setWarnGroup(key, on); a.rebuildAlerts(); a.rebuild() })
+            col.addView(syncedSwitch(a, sync, "warn:$key", label, null, { p.warnGroup(key) }) { on -> p.setWarnGroup(key, on); a.rebuildAlerts(); a.rebuild() })
         }
         col.addView(W.listRow(a, "Warning lines", "Colour, width and style for each warning and threat level", "›") { warningLines(a) }, lp())
 
@@ -183,13 +258,22 @@ object Sheets {
         col.addView(W.switchRow(a, "Show names", "When zoomed in", p.chaserNames) { p.chaserNames = it; a.rebuildFeeds() })
 
         col.addView(W.section(a, "Storm Prediction Center"))
-        layer("outlook", "Day 1 convective outlook", "Today's risk areas: TSTM, MRGL, SLGT, ENH, MDT, HIGH. Tap inside one for the tornado, wind and hail chances.")
+        layer("outlook", "Convective outlook", "Risk areas: TSTM, MRGL, SLGT, ENH, MDT, HIGH. Tap inside one for the chances there.")
+        col.addView(W.segmented(a, listOf("1" to "Today (day 1)", "2" to "Day 2", "3" to "Day 3"), "${p.outlookDay}") {
+            p.outlookDay = it.toInt(); a.applyFeedPrefs(); a.rebuildSpc(); a.rebuild()
+        })
         layer("mcd", "Mesoscale discussions", "Blue outlines – tap one to read it")
         col.addView(W.section(a, "Radar"))
-        col.addView(W.switchRow(a, "Smooth radar", "Blend neighbouring gates instead of showing them as blocks", p.smooth) { on ->
-            p.smooth = on; a.rebuild()
+        col.addView(syncedSwitch(a, sync, "smooth", "Smooth radar", "Blend neighbouring gates instead of showing them as blocks", { p.smooth }) { on ->
+            p.smooth = on; a.displayChanged()
         })
-        col.addView(W.switchRow(a, "Colour legend", null, p.showLegend) { on -> p.showLegend = on; a.settingsChanged() })
+        col.addView(syncedSwitch(a, sync, "dealias", "Dealias velocity", "Unfold aliased velocity, so strong winds don't flip colour (BV and SRV)", { p.dealias }) { on ->
+            p.dealias = on; a.displayChanged()
+        })
+        col.addView(syncedSwitch(a, sync, "trail", "Σ Max-value trail", "Each panel shows the strongest value seen at every spot over the loaded scans (CC: the lowest)", { p.trail }) { on ->
+            p.trail = on; a.requestLoopFrames(); a.displayChanged()
+        })
+        col.addView(syncedSwitch(a, sync, "legend", "Colour legend", null, { p.showLegend }) { on -> p.showLegend = on; a.settingsChanged() })
         a.sheets.show("Map layers", col, fullHeight = true)
     }
 
@@ -292,6 +376,10 @@ object Sheets {
     fun settings(a: MainActivity) {
         val p = a.prefs
         val col = W.vCol(a)
+        col.addView(W.section(a, "Look"))
+        val accentName = Themes.ACCENTS.firstOrNull { it.first == p.accent }?.second ?: "Custom"
+        col.addView(W.listRow(a, "Theme", "${C.themeName}${if (p.accent != 0) " · $accentName accent" else ""}" +
+            if (p.followSystemTheme) " · follows the phone's dark mode" else "", "›") { themes(a) }, lp())
         col.addView(W.section(a, "Units"))
         col.addView(W.text(a, "Velocity", 14f, C.dim), lp())
         col.addView(W.segmented(a, listOf("kts" to "Knots", "mph" to "mph", "m/s" to "m/s"), p.velUnits) { p.velUnits = it; a.settingsChanged() })
@@ -306,7 +394,13 @@ object Sheets {
         col.addView(W.slider(a, "Speed", 0, 80, p.stormKts.toInt(), { "$it kts" }) { p.stormKts = it.toFloat(); a.settingsChanged() })
 
         col.addView(W.section(a, "Loop"))
-        col.addView(W.slider(a, "Frames", 4, 15, p.loopFrames, { "$it" }) { p.loopFrames = it })
+        col.addView(W.note(a, "The previous scans load as soon as you pick a radar, so the loop (and the Σ trail) is ready when you want it. Only the tilt on screen is downloaded."))
+        col.addView(W.slider(a, "Previous scans", 0, Prefs.MAX_PREVIOUS, p.previousScans, { if (it == 0) "off" else "$it + the newest" }) {
+            p.previousScans = it; a.requestLoopFrames(); a.rebuild()
+        })
+        col.addView(W.switchRow(a, "Load them on mobile data", "For the lowest tilts (about 2–3 MB a scan). Higher tilts, or with this off: on Wi-Fi, or when you play the loop.", p.prefetchOnMobile) {
+            p.prefetchOnMobile = it; a.requestLoopFrames()
+        })
         col.addView(W.slider(a, "Speed", 1, 10, 11 - (p.loopSpeedMs / 120).coerceIn(1, 10), { listOf("", "slowest", "slower", "slow", "", "normal", "", "fast", "faster", "fastest", "fastest")[it].ifEmpty { "$it" } }) {
             p.loopSpeedMs = (11 - it) * 120
         })
@@ -328,8 +422,17 @@ object Sheets {
             p.warnAtLocation = it
         })
 
+        col.addView(W.section(a, "Learning"))
+        col.addView(W.switchRow(a, "Learn mode", "Press and hold the map: plain-language notes explain the values there", p.learn) {
+            p.learn = it; a.displayChanged()
+        })
+        col.addView(W.listRow(a, "Radar guide", "What each product shows, and the storm signatures to look for", "›") { radarGuide(a) }, lp())
+
         col.addView(W.section(a, "General"))
         col.addView(W.switchRow(a, "Keep the screen on", "While RadarForge is open", p.keepScreenOn) { p.keepScreenOn = it; a.settingsChanged() })
+        col.addView(W.listRow(a, "Reload radar data", "Starts the live feed for ${a.site?.id ?: "this radar"} again and fetches anything missing", null) {
+            a.sheets.close(); a.reloadData()
+        }, lp())
         col.addView(W.listRow(a, "Clear downloaded radar data", "Frees the space used by cached radar files", null) {
             val dir = java.io.File(a.cacheDir, "l2")
             val bytes = dir.listFiles()?.sumOf { it.length() } ?: 0
@@ -338,6 +441,138 @@ object Sheets {
         }, lp())
         col.addView(W.listRow(a, "About RadarForge", "Version, data sources, diagnostics", "›") { about(a) }, lp())
         a.sheets.show("Settings", col, fullHeight = true)
+    }
+
+    // ------------------------------------------------------------------ themes
+    /** A small picture of a theme: the map with a few lines, a panel strip and its accent. */
+    class ThemePreview(ctx: Context, private val t: Theme, private val accent: Int) : View(ctx) {
+        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        override fun onDraw(c: android.graphics.Canvas) {
+            val w = width.toFloat(); val h = height.toFloat(); val d = resources.displayMetrics.density
+            val r = 8f * d
+            val clip = android.graphics.Path().apply { addRoundRect(0f, 0f, w, h, r, r, android.graphics.Path.Direction.CW) }
+            c.save(); c.clipPath(clip)
+            c.drawColor(t.color("map_bg"))
+            paint.style = android.graphics.Paint.Style.STROKE
+            paint.strokeCap = android.graphics.Paint.Cap.ROUND
+            fun line(key: String, width: Float, vararg pts: Float) {
+                paint.color = t.color(key); paint.strokeWidth = width * d
+                val path = android.graphics.Path(); path.moveTo(pts[0] * w, pts[1] * h)
+                var i = 2; while (i + 1 < pts.size) { path.lineTo(pts[i] * w, pts[i + 1] * h); i += 2 }
+                c.drawPath(path, paint)
+            }
+            line("counties", 1f, 0f, 0.42f, 0.55f, 0.42f, 0.55f, 0.95f)
+            line("counties", 1f, 0.55f, 0.42f, 1f, 0.42f)
+            line("roads", 1.4f, 0.05f, 0.95f, 0.45f, 0.55f, 0.95f, 0.35f)
+            line("states", 1.8f, 0.3f, 0f, 0.3f, 1f)
+            // a storm, and a warning outline
+            paint.style = android.graphics.Paint.Style.FILL
+            for ((rad, col) in listOf(0.24f to 0xff1a9e2b.toInt(), 0.16f to 0xffe5d600.toInt(), 0.09f to 0xffe0261f.toInt())) {
+                paint.color = col; c.drawCircle(0.72f * w, 0.62f * h, rad * h, paint)
+            }
+            paint.style = android.graphics.Paint.Style.STROKE
+            paint.color = 0xffff2020.toInt(); paint.strokeWidth = 1.6f * d
+            c.drawRect(0.56f * w, 0.4f * h, 0.9f * w, 0.84f * h, paint)
+            // the bar along the top, with an accent "chip"
+            paint.style = android.graphics.Paint.Style.FILL
+            paint.color = t.color("panel"); c.drawRect(0f, 0f, w, 0.24f * h, paint)
+            paint.color = t.color("text"); c.drawRoundRect(0.06f * w, 0.08f * h, 0.34f * w, 0.15f * h, 2 * d, 2 * d, paint)
+            paint.color = if (accent != 0) accent else t.color("accent")
+            c.drawRoundRect(0.66f * w, 0.05f * h, 0.94f * w, 0.19f * h, 6 * d, 6 * d, paint)
+            c.restore()
+            paint.style = android.graphics.Paint.Style.STROKE; paint.strokeWidth = 1f * d; paint.color = C.border
+            c.drawRoundRect(0.5f, 0.5f, w - 0.5f, h - 0.5f, r, r, paint)
+        }
+    }
+
+    fun themes(a: MainActivity) {
+        val p = a.prefs
+        val col = W.vCol(a)
+        col.addView(W.note(a, "The same themes as RadarForge for PC. They colour the app and the map; your colour tables and warning lines stay as they are."))
+        val grid = ChipGrid(a, minColDp = 150f, gapDp = 10f)
+        for (t in Themes.BUILTIN) {
+            val active = t.name == C.themeName
+            val card = W.vCol(a).apply {
+                setPadding(a.dpi(6f), a.dpi(6f), a.dpi(6f), a.dpi(8f))
+                background = com.libexil.radarforge.ui.ripple(rounded(if (active) C.accentSoft else C.alt, a.dp(12f),
+                    if (active) C.accent else C.border, a.dpi(if (active) 2f else 1f)))
+                isClickable = true
+                contentDescription = "${t.name} theme"
+                setOnClickListener {
+                    if (t.name == C.themeName && !p.followSystemTheme) return@setOnClickListener
+                    p.theme = t.name
+                    // picking the light theme while following the phone would be overridden in dark mode: stop following
+                    if (p.followSystemTheme && (t.dark != C.dark || !t.dark)) p.followSystemTheme = false
+                    a.restyle("themes")
+                }
+            }
+            card.addView(ThemePreview(a, t, p.accent), LinearLayout.LayoutParams(-1, a.dpi(74f)))
+            val name = W.hRow(a).apply { setPadding(a.dpi(4f), a.dpi(8f), a.dpi(2f), 0) }
+            name.addView(W.text(a, t.name, 14f, C.text, true).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END },
+                LinearLayout.LayoutParams(0, -2, 1f))
+            if (active) name.addView(IconView(a, Icon.CHECK, C.accent), LinearLayout.LayoutParams(a.dpi(20f), a.dpi(20f)))
+            card.addView(name)
+            card.addView(W.text(a, if (t.dark) "Dark" else "Light", 12f, C.dim).apply { setPadding(a.dpi(4f), a.dpi(2f), 0, 0) })
+            grid.addView(card)
+        }
+        col.addView(grid, lp(top = a.dpi(4f)))
+
+        col.addView(W.section(a, "Accent colour"))
+        val accents = W.hRow(a)
+        for ((c, label) in Themes.ACCENTS) {
+            val chosen = p.accent == c
+            val swatch = if (c == 0) Themes.byName(p.theme).color("accent") else c
+            accents.addView(android.widget.FrameLayout(a).apply {
+                background = com.libexil.radarforge.ui.ripple(rounded(swatch, a.dp(19f), if (chosen) C.text else Themes.withAlpha(C.text, 0x44), a.dpi(if (chosen) 3f else 1f)))
+                isClickable = true
+                contentDescription = "$label accent"
+                if (c == 0) addView(W.text(a, "A", 13f, Themes.byName(p.theme).color("accent_text"), true).apply { gravity = Gravity.CENTER },
+                    android.widget.FrameLayout.LayoutParams(-1, -1))
+                setOnClickListener { if (!chosen) { p.accent = c; a.restyle("themes") } }
+            }, LinearLayout.LayoutParams(a.dpi(38f), a.dpi(38f)).apply { rightMargin = a.dpi(10f) })
+        }
+        col.addView(android.widget.HorizontalScrollView(a).apply { isHorizontalScrollBarEnabled = false; addView(accents) }, lp(top = a.dpi(4f)))
+        col.addView(W.note(a, "\"A\" uses the theme's own accent."), lp(top = a.dpi(4f)))
+
+        col.addView(W.section(a, "Light and dark"))
+        col.addView(W.switchRow(a, "Follow the phone's dark mode", "Daylight when the phone is in light mode; ${if (Themes.byName(p.theme).dark) p.theme else Themes.DEFAULT.name} in dark mode", p.followSystemTheme) {
+            p.followSystemTheme = it
+            a.restyle("themes")
+        })
+
+        col.addView(W.section(a, "Map text size"))
+        col.addView(W.segmented(a, Themes.TEXT_SIZES.map { "${it.first}" to it.second },
+            "${Themes.TEXT_SIZES.minByOrNull { Math.abs(it.first - p.mapTextScale) }?.first ?: 1f}") {
+            p.mapTextScale = it.toFloat(); a.settingsChanged()
+        })
+        col.addView(W.note(a, "City names, panel titles, colour bars and the inspector."))
+        a.sheets.show("Theme", col, fullHeight = true)
+    }
+
+    // ------------------------------------------------------------------ radar guide
+    fun radarGuide(a: MainActivity) {
+        val col = W.vCol(a)
+        col.addView(W.note(a, "Press and hold the map with learn mode on (Map layers → Quick switches) to get these explanations for the exact spot under your finger."))
+        col.addView(W.section(a, "Products"))
+        for (pr in Product.entries) {
+            val text = Learn.PRODUCT_HELP[pr] ?: continue
+            val row = W.vCol(a).apply { setPadding(a.dpi(4f), a.dpi(6f), a.dpi(4f), a.dpi(8f)) }
+            row.addView(W.text(a, "${pr.short}  ·  ${pr.title}", 15f, C.text, true))
+            row.addView(W.text(a, text, 13.5f, C.dim).apply { setLineSpacing(0f, 1.18f); setPadding(0, a.dpi(4f), 0, 0) })
+            col.addView(row, lp())
+        }
+        col.addView(W.section(a, "Signatures"))
+        for ((name, text) in Learn.SIGNATURES) {
+            val row = W.vCol(a).apply { setPadding(a.dpi(4f), a.dpi(6f), a.dpi(4f), a.dpi(8f)) }
+            row.addView(W.text(a, name, 15f, C.text, true))
+            row.addView(W.text(a, text, 13.5f, C.dim).apply { setLineSpacing(0f, 1.18f); setPadding(0, a.dpi(4f), 0, 0) })
+            col.addView(row, lp())
+        }
+        col.addView(W.switchRow(a, "Learn mode", "Explain the values when you press and hold the map", a.prefs.learn) {
+            a.prefs.learn = it; a.displayChanged()
+        })
+        col.addView(W.note(a, "Radar can't see everything, and it's not an official warning source. Always follow the National Weather Service."), lp(top = a.dpi(8f)))
+        a.sheets.show("Radar guide", col, fullHeight = true)
     }
 
     // ------------------------------------------------------------------ colour tables
@@ -374,15 +609,8 @@ object Sheets {
     }
 
     // ------------------------------------------------------------------ warning colours
-    /** Text colour that stays readable on the dark sheet (very dark warning colours are lightened). */
-    private fun readable(c: Int): Int {
-        val r = (c shr 16) and 0xff; val g = (c shr 8) and 0xff; val b = c and 0xff
-        val lum = 0.299 * r + 0.587 * g + 0.114 * b
-        if (lum >= 90) return c or 0xff000000.toInt()
-        val k = 90.0 / maxOf(lum, 1.0)
-        fun ch(v: Int) = minOf(255, (v * k + 40).toInt())
-        return (0xff shl 24) or (ch(r) shl 16) or (ch(g) shl 8) or ch(b)
-    }
+    /** Text colour that stays readable on the sheet (warning colours are lightened or darkened to suit the theme). */
+    private fun readable(c: Int): Int = Themes.readable(c)
 
     private fun hex(c: Int) = String.format(Locale.US, "#%06X", c and 0xffffff)
 
@@ -396,7 +624,7 @@ object Sheets {
         }
 
         override fun onDraw(c: android.graphics.Canvas) {
-            c.drawColor(0xff101116.toInt())
+            c.drawColor(C.mapBg)
             val d = resources.displayMetrics.density
             val y = height / 2f
             val w = line.width * d * 1.1f
@@ -675,7 +903,7 @@ object Sheets {
                 text = "$k: $v"
                 textSize = 14f
                 setTextColor(C.text)
-                setLinkTextColor(0xff8fb4ff.toInt())
+                setLinkTextColor(C.link)
                 autoLinkMask = android.text.util.Linkify.WEB_URLS
                 setTextIsSelectable(true)
                 movementMethod = android.text.method.LinkMovementMethod.getInstance()
@@ -691,7 +919,7 @@ object Sheets {
 
     fun mcdDetail(a: MainActivity, m: MesoDiscussion) {
         val col = W.vCol(a)
-        col.addView(W.text(a, "Mesoscale Discussion ${m.number}", 20f, 0xff8fb4ff.toInt(), true), lp(top = a.dpi(4f)))
+        col.addView(W.text(a, "Mesoscale Discussion ${m.number}", 20f, C.link, true), lp(top = a.dpi(4f)))
         if (m.concerning.isNotBlank()) col.addView(W.text(a, "Concerning: ${m.concerning.lowercase(Locale.US).replaceFirstChar { it.titlecase(Locale.US) }}", 14.5f, C.text), lp(top = a.dpi(8f)))
         val now = System.currentTimeMillis()
         val times = buildString {
@@ -724,14 +952,18 @@ object Sheets {
     fun outlookDetail(a: MainActivity, lat: Double, lon: Double, hits: List<OutlookArea>) {
         val col = W.vCol(a)
         val cat = hits.filter { it.category == "CATEGORICAL" }.maxByOrNull { Spc.catIndex(it.threshold) } ?: return
-        val color = Spc.CAT_COLOR[cat.threshold] ?: C.text
+        val color = Themes.readable(Spc.CAT_COLOR[cat.threshold] ?: C.text)
         col.addView(W.text(a, Spc.CAT_NAME[cat.threshold] ?: cat.threshold, 20f, color, true), lp(top = a.dpi(4f)))
-        col.addView(W.text(a, "SPC day 1 convective outlook (${cat.threshold})", 13.5f, C.dim), lp(top = a.dpi(4f)))
+        col.addView(W.text(a, "SPC day ${a.dm.outlookShownDay} convective outlook (${cat.threshold})", 13.5f, C.dim), lp(top = a.dpi(4f)))
         if (cat.expireMs > 0) col.addView(W.text(a, "Valid until ${Time.local(cat.expireMs, "EEE h:mm a")}" +
             if (cat.issueMs > 0) "  ·  issued ${Time.local(cat.issueMs)}" else "", 13.5f, C.dim), lp(top = a.dpi(2f)))
         col.addView(W.section(a, "Chance within 25 miles of here"))
-        for ((key, label, none) in listOf(Triple("TORNADO", "Tornado", "under 2%"), Triple("WIND", "Damaging wind", "under 5%"), Triple("HAIL", "Large hail", "under 5%"))) {
-            val mine = hits.filter { it.category == key }
+        // day 3 gives one "any severe" probability instead of separate tornado / wind / hail ones
+        val anyKeys = setOf("ANY SEVERE", "ANYSEVERE", "PROBABILISTIC")
+        val rows = if (hits.any { it.category in anyKeys }) listOf(Triple("ANY", "Any severe weather", "under 5%"))
+            else listOf(Triple("TORNADO", "Tornado", "under 2%"), Triple("WIND", "Damaging wind", "under 5%"), Triple("HAIL", "Large hail", "under 5%"))
+        for ((key, label, none) in rows) {
+            val mine = hits.filter { if (key == "ANY") it.category in anyKeys else it.category == key }
             val best = mine.mapNotNull { it.threshold.toDoubleOrNull() }.maxOrNull()
             val sig = mine.any { it.threshold == "SIGN" }
             val text = (if (best != null) "${Math.round(best * 100)}%" else none) + if (sig) "  ·  significant (hatched)" else ""
@@ -805,12 +1037,12 @@ object Sheets {
         a.prefs.seenWhatsNew = MainActivity.WHATS_NEW
         val col = W.vCol(a)
         val items = listOf(
-            "Measuring tools – the ruler at the bottom: distances, or a storm track with arrival times for the towns ahead.",
-            "Storm reports and storm chasers (Spotter Network) – switch them on under Map layers.",
-            "SPC day 1 outlook and mesoscale discussions – also under Map layers.",
-            "The location button now follows you, switching radars as you travel. Tap it again to stop.",
-            "Share a picture of the map with the share button at the top.",
-            "Star your favourite radars in the radar list.",
+            "The 10 previous scans load as soon as you pick a radar, so the loop is ready straight away. ◀ ▶ in the loop bar step one scan at a time. (Settings → Loop: how many, and whether to load them on mobile data.)",
+            "Themes – the six from RadarForge for PC, an accent colour, and following the phone's dark mode (Settings → Theme, or press and hold the settings button).",
+            "Quick switches at the top of Map layers: every layer and radar option one tap away.",
+            "Σ max-value trail and velocity dealiasing, as on the desktop app.",
+            "Learn mode and a radar guide: press and hold the map for plain-language notes about the values there.",
+            "SPC day 2 and day 3 outlooks, a coloured dot showing how fresh the data is, and two-finger tap to zoom out.",
         )
         for (t in items) {
             val row = W.hRow(a).apply { setPadding(0, a.dpi(6f), 0, a.dpi(6f)) }
@@ -839,9 +1071,10 @@ object Sheets {
             "Press and hold the map to read the value under your finger.",
             "Pick products along the bottom; the arrows change the tilt.",
             "The panel button shows 2 or 4 linked panels – tap a panel to choose its product.",
-            "Play builds a loop of the last few scans.",
+            "Play loops the previous scans (they load as soon as you pick a radar); ◀ ▶ step through them.",
             "The ruler measures distances, or tracks a storm and shows when it reaches the towns ahead.",
-            "Map layers has storm reports, storm chasers and the SPC outlook.",
+            "Map layers has quick switches for everything: warnings, storm reports, chasers, SPC, smoothing, dealiasing, the Σ trail and learn mode.",
+            "Settings → Theme changes the colours of the app and the map.",
         )
         for (t in tips) {
             val row = W.hRow(a).apply { setPadding(0, a.dpi(6f), 0, a.dpi(6f)) }

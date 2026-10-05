@@ -51,9 +51,15 @@ class Prefs(ctx: Context) {
         get() = p.getFloat("storm_kts", 30f)
         set(v) = put { putFloat("storm_kts", v) }
 
-    var loopFrames: Int
-        get() = p.getInt("loop_frames", 8).coerceIn(3, 20)
-        set(v) = put { putInt("loop_frames", v) }
+    /** How many scans before the newest are kept loaded for the loop (they load as soon as a radar is picked). */
+    var previousScans: Int
+        get() = p.getInt("previous_scans", 10).coerceIn(0, MAX_PREVIOUS)
+        set(v) = put { putInt("previous_scans", v.coerceIn(0, MAX_PREVIOUS)) }
+
+    /** Load the previous scans automatically on mobile data too (otherwise only on Wi-Fi, or when the loop is played). */
+    var prefetchOnMobile: Boolean
+        get() = p.getBoolean("prefetch_mobile", true)
+        set(v) = put { putBoolean("prefetch_mobile", v) }
 
     var loopSpeedMs: Int
         get() = p.getInt("loop_speed", 350).coerceIn(80, 1500)
@@ -66,6 +72,41 @@ class Prefs(ctx: Context) {
     var showLegend: Boolean
         get() = p.getBoolean("legend", true)
         set(v) = put { putBoolean("legend", v) }
+
+    /** Unfold aliased velocity (BV and SRV). */
+    var dealias: Boolean
+        get() = p.getBoolean("dealias", false)
+        set(v) = put { putBoolean("dealias", v) }
+
+    /** Σ max-value trail over the loaded scans. */
+    var trail: Boolean
+        get() = p.getBoolean("trail", false)
+        set(v) = put { putBoolean("trail", v) }
+
+    /** Learn mode: explain the values under the cross-hair in plain words. */
+    var learn: Boolean
+        get() = p.getBoolean("learn", false)
+        set(v) = put { putBoolean("learn", v) }
+
+    // ---- look
+    var theme: String
+        get() = s("theme", "RadarForge Dark")
+        set(v) = put { putString("theme", v) }
+
+    /** Accent colour (0xAARRGGBB), or 0 for the theme's own. */
+    var accent: Int
+        get() = p.getInt("accent", 0)
+        set(v) = put { putInt("accent", v) }
+
+    /** Use the light theme when the phone is in light mode. */
+    var followSystemTheme: Boolean
+        get() = p.getBoolean("follow_system_theme", false)
+        set(v) = put { putBoolean("follow_system_theme", v) }
+
+    /** Size of map labels (city names, panel titles, colour bars, inspector). */
+    var mapTextScale: Float
+        get() = p.getFloat("map_text_scale", 1f).coerceIn(0.7f, 1.6f)
+        set(v) = put { putFloat("map_text_scale", v) }
 
     /** Map layers; the newer ones (storm reports, chasers, SPC) start switched off. */
     fun layer(name: String) = p.getBoolean("layer_$name", name !in OFF_BY_DEFAULT)
@@ -104,6 +145,11 @@ class Prefs(ctx: Context) {
         get() = p.getFloat("map_scale", 1.6f)
         set(v) = put { putFloat("map_scale", v) }
 
+    /** Where the map was left (km from [mapSite]), so it opens there again. */
+    fun saveMapCenter(siteId: String, x: Float, y: Float) = put { putString("map_site", siteId); putFloat("map_x", x); putFloat("map_y", y) }
+    fun mapCenterFor(siteId: String): FloatArray? =
+        if (s("map_site", "") == siteId) floatArrayOf(p.getFloat("map_x", 0f), p.getFloat("map_y", 0f)) else null
+
     var askedLocation: Boolean
         get() = p.getBoolean("asked_location", false)
         set(v) = put { putBoolean("asked_location", v) }
@@ -126,6 +172,11 @@ class Prefs(ctx: Context) {
     /** Report filters: tornado, hail, wind, flood, other (rain, snow...). */
     fun reportGroup(name: String) = p.getBoolean("rep_$name", name != "other")
     fun setReportGroup(name: String, on: Boolean) = put { putBoolean("rep_$name", on) }
+
+    /** SPC outlook day: 1, 2 or 3. */
+    var outlookDay: Int
+        get() = p.getInt("outlook_day", 1).coerceIn(1, 3)
+        set(v) = put { putInt("outlook_day", v.coerceIn(1, 3)) }
 
     var spotterReports: Boolean
         get() = p.getBoolean("sn_reports", true)
@@ -178,5 +229,6 @@ class Prefs(ctx: Context) {
         val OFF_BY_DEFAULT = setOf("reports", "chasers", "outlook", "mcd")
         val REPORT_HOURS = listOf(1, 3, 6, 12, 24)
         val TRACK_MINUTES = listOf(30, 60, 90, 120)
+        const val MAX_PREVIOUS = 20
     }
 }

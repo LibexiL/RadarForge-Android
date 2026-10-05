@@ -13,6 +13,10 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.net.ConnectivityManager
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -40,6 +44,11 @@ import com.libexil.radarforge.core.Alerts
 import com.libexil.radarforge.core.Basemap
 import com.libexil.radarforge.core.Chaser
 import com.libexil.radarforge.core.ColorTable
+import com.libexil.radarforge.core.Dealias
+import com.libexil.radarforge.core.Learn
+import com.libexil.radarforge.core.LoopFrame
+import com.libexil.radarforge.core.LoopSupport
+import com.libexil.radarforge.core.Trail
 import com.libexil.radarforge.core.Field
 import com.libexil.radarforge.core.Geo
 import com.libexil.radarforge.core.MesoDiscussion
@@ -56,6 +65,7 @@ import com.libexil.radarforge.core.Tilts
 import com.libexil.radarforge.core.Time
 import com.libexil.radarforge.core.Volume
 import com.libexil.radarforge.data.DataManager
+import com.libexil.radarforge.data.DerivedFields
 import com.libexil.radarforge.data.Palettes
 import com.libexil.radarforge.data.Prefs
 import com.libexil.radarforge.gl.LayerDraw
@@ -68,6 +78,7 @@ import com.libexil.radarforge.ui.IconView
 import com.libexil.radarforge.ui.MapState
 import com.libexil.radarforge.ui.OverlayView
 import com.libexil.radarforge.ui.SheetHost
+import com.libexil.radarforge.ui.Themes
 import com.libexil.radarforge.ui.W
 import com.libexil.radarforge.ui.dp
 import com.libexil.radarforge.ui.dpi
@@ -87,6 +98,8 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     lateinit var overlay: OverlayView
     lateinit var sheets: SheetHost
     lateinit var dm: DataManager
+    /** Dealiased velocity and Σ trails, made in the background. */
+    lateinit var derived: DerivedFields
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "rf-geo").apply { isDaemon = true } }
 
@@ -109,7 +122,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     // big enough for every loop frame of every panel, so playback never rebuilds fields
     private val fieldCache = object : LinkedHashMap<String, Field>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Field>?) =
-            size > maxOf(24, prefs.loopFrames * state.panelCount + 12)
+            size > maxOf(24, (prefs.previousScans + 1) * state.panelCount + 12)
     }
 
     // loop
@@ -149,20 +162,93 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     private var statusError = false
 
     // ---------------------------------------------------------------- lifecycle
+    /** What survives a theme change (the activity is rebuilt, the data isn't). */
+    private class Retained(val dm: DataManager, val derived: DerivedFields, val basemap: Basemap?, val sites: List<Site>,
+                           val siteId: String?, val cx: Float, val cy: Float, val scale: Float, val activePanel: Int, val reopen: String?)
+    private var reopenSheet: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
+        applyTheme()
         palettes = Palettes(this, prefs)
         state.panelCount = prefs.panels
         state.scale = prefs.mapScale
+        @Suppress("DEPRECATION")
+        val kept = lastNonConfigurationInstance as? Retained
         buildViews()
-        dm = DataManager(this) { fips -> basemap?.countyRings(fips) ?: emptyList() }
+        if (kept != null) {
+            dm = kept.dm
+            derived = kept.derived
+        } else {
+            dm = DataManager(this) { emptyList() }
+            derived = DerivedFields { }
+        }
+        dm.countyRings = { fips -> basemap?.countyRings(fips) ?: emptyList() }
+        derived.onReady = { if (!isDestroyed) rebuild() }
+        derived.maxBytes = minOf(96L shl 20, Runtime.getRuntime().maxMemory() / 6)
         dm.listener = this
         dm.wantAlerts = prefs.layer("warnings")
         applyFeedPrefs()
         applyKeepScreenOn()
-        worker.execute { loadAssets() }
-        Crash.takeReport()?.let { report -> main.postDelayed({ Sheets.crashReport(this, report) }, 600) }
+        if (kept != null && kept.basemap != null && kept.sites.isNotEmpty()) {
+            restore(kept)
+        } else {
+            worker.execute { loadAssets() }
+            Crash.takeReport()?.let { report -> main.postDelayed({ Sheets.crashReport(this, report) }, 600) }
+        }
+    }
+
+    /** Sets the theme's colours (and the system bars) before any view is built. */
+    private fun applyTheme() {
+        Themes.apply(currentTheme(), prefs.accent)
+        try {
+            window.statusBarColor = C.panel
+            window.navigationBarColor = C.panel
+            window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(C.window))
+            @Suppress("DEPRECATION")
+            var flags = window.decorView.systemUiVisibility
+            @Suppress("DEPRECATION")
+            flags = if (!C.dark) flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                else flags and (View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR).inv()
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = flags
+        } catch (_: Exception) {}
+    }
+
+    private fun systemDark() = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) != Configuration.UI_MODE_NIGHT_NO
+
+    private fun currentTheme() = Themes.resolve(prefs.theme, prefs.followSystemTheme, systemDark())
+
+    /**
+     * Rebuilds the screen in the new colours, keeping the radar data, the view and the open sheet
+     * ([reopen]: "themes" reopens the theme picker).
+     */
+    fun restyle(reopen: String? = null) {
+        reopenSheet = reopen
+        prefs.mapScale = state.scale
+        recreate()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onRetainNonConfigurationInstance(): Any? {
+        if (!::dm.isInitialized) return null
+        return Retained(dm, derived, basemap, sites, site?.id, state.cx, state.cy, state.scale, state.activePanel, reopenSheet)
+    }
+
+    /** After a theme change: the same radar, data and view. */
+    private fun restore(k: Retained) {
+        basemap = k.basemap
+        sites = k.sites
+        val s = sites.firstOrNull { it.id == k.siteId } ?: sites.firstOrNull { it.id == prefs.site }
+        if (s == null) { worker.execute { loadAssets() }; return }
+        state.activePanel = k.activePanel.coerceIn(0, state.panelCount - 1)
+        selectSite(s, resetView = false, keepData = true)
+        state.cx = k.cx; state.cy = k.cy; state.scale = k.scale
+        refreshProductChips()
+        when (k.reopen) {
+            "themes" -> main.postDelayed({ if (!sheets.isOpen) Sheets.themes(this) }, 120)
+        }
     }
 
     override fun onResume() {
@@ -171,6 +257,10 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         dm.start()
         if (playing) main.post(loopTick)
         startLiveLocation()
+        main.removeCallbacks(statusTick)
+        main.postDelayed(statusTick, 30_000)
+        // e.g. back on Wi-Fi: the previous scans may load now
+        if (site != null) requestLoopFrames()
     }
 
     override fun onPause() {
@@ -178,14 +268,19 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         glView.onPause()
         dm.stop()
         main.removeCallbacks(loopTick)
+        main.removeCallbacks(statusTick)
         prefs.mapScale = state.scale
+        site?.let { prefs.saveMapCenter(it.id, state.cx, state.cy) }
         stopLiveLocation()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         dm.listener = null
-        dm.shutdown()
+        if (!isChangingConfigurations) {
+            dm.shutdown()
+            derived.shutdown()
+        }
         worker.shutdownNow()
         main.removeCallbacksAndMessages(null)
         stopLocation()
@@ -194,9 +289,19 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        // the phone switched between light and dark mode
+        if (prefs.followSystemTheme && currentTheme().name != C.themeName) { restyle(); return }
         arrangeBottomBar()
         // layout listeners recompute the map area; just redraw
         root.post { updateArea(); requestRender() }
+    }
+
+    /** Keeps "3 min ago" (and its colour) current. */
+    private val statusTick = object : Runnable {
+        override fun run() {
+            updateStatusLine()
+            main.postDelayed(this, 30_000)
+        }
     }
 
     @Deprecated("Deprecated in Java")
@@ -220,14 +325,33 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         overlay.velUnits = prefs.velUnits
         overlay.distUnits = prefs.distUnits
         overlay.showLegend = prefs.showLegend
+        overlay.textScale = prefs.mapTextScale
         rebuildRings()
         rebuildAlerts()
         rebuildFeeds()
         rebuildSpc()
         fieldCache.clear()
+        derived.cancelQueued()
         rebuild()
         onToolChanged()
+        updateLearnCard()
+        requestLoopFrames()
         if (!prefs.liveLocation && !following) stopLiveLocation() else startLiveLocation()
+    }
+
+    /** Smoothing, dealiasing, the Σ trail or learn mode changed. */
+    fun displayChanged() {
+        derived.cancelQueued()
+        rebuild()
+        updateLearnCard()
+    }
+
+    /** Starts the live feed again and reloads anything missing (Settings, or the radar list). */
+    fun reloadData() {
+        dm.reload()
+        dm.refreshNow()
+        requestLoopFrames()
+        toast("Reloading ${site?.id ?: "radar"} data…")
     }
 
     /** A map layer or one of its options changed. */
@@ -249,7 +373,10 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         dm.wantChasers = prefs.layer("chasers")
         dm.wantOutlook = prefs.layer("outlook")
         dm.wantMcd = prefs.layer("mcd")
+        val dayChanged = dm.outlookDay != prefs.outlookDay
+        dm.outlookDay = prefs.outlookDay
         for ((name, was) in before) if (prefs.layer(name) && !was) dm.refreshFeed(name)
+        if (dayChanged && prefs.layer("outlook")) dm.refreshFeed("outlook")
     }
 
     // ---------------------------------------------------------------- assets + sites
@@ -265,6 +392,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
                 val saved = st.firstOrNull { it.id == prefs.site }
                 if (saved != null) {
                     selectSite(saved, resetView = true)
+                    prefs.mapCenterFor(saved.id)?.let { c -> state.cx = c[0]; state.cy = c[1] }
                     if (prefs.seenWhatsNew != WHATS_NEW) main.postDelayed({ if (!sheets.isOpen) Sheets.whatsNew(this) }, 900)
                 } else firstLaunch()
             }
@@ -286,13 +414,14 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         main.postDelayed({ if (!prefs.seenWelcome) Sheets.welcome(this) }, 900)
     }
 
-    fun selectSite(s: Site, resetView: Boolean = true) {
+    fun selectSite(s: Site, resetView: Boolean = true, keepData: Boolean = false) {
         val changed = site?.id != s.id
         site = s
         prefs.site = s.id
         siteTitle.text = s.id
         if (changed) {
             fieldCache.clear()
+            if (!keepData) derived.clear()
             tilts = emptyList()
             stopLoop()
             overlay.hideInspector()
@@ -309,7 +438,9 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             overlay.resetTools()          // measurements are in the old radar's coordinates
         }
         if (resetView) { state.cx = 0f; state.cy = 0f }
-        dm.setSite(s.id)
+        if (!keepData) dm.setSite(s.id)
+        // the previous scans load as soon as the newest volume is in
+        requestLoopFrames()
         updateStatusLine()
         val bm = basemap ?: return
         worker.execute {
@@ -366,6 +497,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             showLegend = prefs.showLegend
             showCities = prefs.layer("cities")
             showSites = prefs.layer("sites")
+            textScale = prefs.mapTextScale
         }
         root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
 
@@ -402,7 +534,9 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         topBar.addView(warnBtn)
         topBar.addView(W.iconButton(this, Icon.LAYERS, "Map layers") { Sheets.layers(this) })
         topBar.addView(W.iconButton(this, Icon.SHARE, "Share a picture of the map") { shareScreenshot() })
-        topBar.addView(W.iconButton(this, Icon.SLIDERS, "Settings") { Sheets.settings(this) })
+        topBar.addView(W.iconButton(this, Icon.SLIDERS, "Settings") { Sheets.settings(this) }.apply {
+            setOnLongClickListener { Sheets.themes(this@MainActivity); true }
+        })
         root.addView(topBar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
 
         // ---- bottom bar: loop row, products, tilt + tools
@@ -412,9 +546,15 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             setPadding(0, dpi(4f), 0, dpi(4f))
             elevation = dp(4f)
         }
-        loopRow = W.hRow(this).apply { setPadding(dpi(12f), dpi(2f), dpi(4f), dpi(2f)); visibility = View.GONE }
-        loopTime = W.text(this, "", 13f, C.text, true).apply { minWidth = dpi(86f) }
+        loopRow = W.hRow(this).apply { setPadding(dpi(2f), dpi(2f), dpi(4f), dpi(2f)); visibility = View.GONE }
+        loopRow.addView(W.iconButton(this, Icon.PREV, "Previous scan") { stepFrame(-1) }.apply {
+            layoutParams = LinearLayout.LayoutParams(dpi(40f), dpi(40f))
+        })
+        loopTime = W.text(this, "", 13f, C.text, true).apply { minWidth = dpi(92f); gravity = Gravity.CENTER }
         loopRow.addView(loopTime)
+        loopRow.addView(W.iconButton(this, Icon.NEXT, "Next scan") { stepFrame(+1) }.apply {
+            layoutParams = LinearLayout.LayoutParams(dpi(40f), dpi(40f))
+        })
         loopSeek = SeekBar(this).apply {
             progressTintList = android.content.res.ColorStateList.valueOf(C.accent)
             thumbTintList = android.content.res.ColorStateList.valueOf(C.accent)
@@ -454,7 +594,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         tools.addView(W.weightSpace(this))
         panelsBtn = W.iconButton(this, panelIcon(), "Panels") { cyclePanels() }
         tools.addView(panelsBtn)
-        loopBtn = W.iconButton(this, Icon.PLAY, "Loop") { toggleLoop() }
+        loopBtn = W.iconButton(this, Icon.PLAY, "Loop the previous scans") { toggleLoop() }
         tools.addView(loopBtn)
         toolBtn = W.iconButton(this, Icon.RULER, "Measure distance / storm track") { if (overlay.tool == OverlayView.Tool.NONE) openTools() else closeTools() }
         tools.addView(toolBtn)
@@ -465,6 +605,19 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         arrangeBottomBar()
         root.addView(bottomBar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
 
+        // learn mode: what the values under the cross-hair mean, floating just above the bottom bar
+        learnCard = W.text(this, "", 13.5f, C.text).apply {
+            setLineSpacing(0f, 1.18f)
+            setPadding(dpi(14f), dpi(10f), dpi(14f), dpi(10f))
+            visibility = View.GONE
+            isClickable = true
+            background = ripple(rounded(Themes.withAlpha(C.panel, 0xf2), dp(12f), C.border, dpi(1f)))
+            elevation = dp(6f)
+            setOnClickListener { Sheets.radarGuide(this@MainActivity) }
+        }
+        root.addView(learnCard, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
+            leftMargin = dpi(8f); rightMargin = dpi(8f); bottomMargin = dpi(120f)
+        })
         sheets = SheetHost(this).apply { elevation = dp(8f) }   // above the bars (elevation 4dp)
         root.addView(sheets, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
@@ -475,6 +628,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         refreshProductChips()
     }
 
+    private lateinit var learnCard: TextView
     private lateinit var barRow: LinearLayout
     private lateinit var productScroll: HorizontalScrollView
     private lateinit var toolsRow: LinearLayout
@@ -648,6 +802,10 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     private fun updateArea() {
         val a = RectF(0f, topBar.bottom.toFloat(), root.width.toFloat(), bottomBar.top.toFloat())
         if (a.height() <= 0 || a.width() <= 0) return
+        (learnCard.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+            val want = root.height - bottomBar.top + dpi(8f)
+            if (lp.bottomMargin != want) { lp.bottomMargin = want; learnCard.requestLayout() }
+        }
         if (a != state.area) {
             state.area = a
             overlay.invalidate()
@@ -670,8 +828,9 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         list[i] = p
         prefs.panelProducts = list
         refreshProductChips()
-        if (looping) requestLoopFrames()
+        requestLoopFrames()
         rebuild()
+        updateLearnCard()
     }
 
     private fun refreshProductChips() {
@@ -685,16 +844,22 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         if (state.activePanel >= state.panelCount) state.activePanel = 0
         panelsBtn.icon = panelIcon()
         refreshProductChips()
-        if (looping) requestLoopFrames()
+        requestLoopFrames()
         rebuild()
     }
 
     fun setTiltIndex(i: Int) {
         val t = tilts.getOrNull(i) ?: return
+        if (Math.abs(prefs.tilt - t.elevation) > 0.01f) derived.cancelQueued()
         prefs.tilt = t.elevation
-        if (looping) requestLoopFrames()
+        // stepping through tilts quickly shouldn't start a download for every one
+        main.removeCallbacks(loopRequestTask)
+        main.postDelayed(loopRequestTask, if (looping) 150L else 600L)
         rebuild()
+        updateLearnCard()
     }
+
+    private val loopRequestTask = Runnable { requestLoopFrames() }
 
     private fun stepTilt(d: Int) {
         if (tilts.isEmpty()) return
@@ -702,17 +867,33 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         setTiltIndex((i + d).coerceIn(0, tilts.size - 1))
     }
 
-    // ---------------------------------------------------------------- loop
+    // ---------------------------------------------------------------- loop (previous scans)
     private fun toggleLoop() {
         if (!looping) {
-            looping = true
-            frameIndex = -1
-            loopRow.visibility = View.VISIBLE
-            requestLoopFrames()
-            setPlaying(true)
+            startLoop(play = true)
         } else {
             setPlaying(!playing)
         }
+    }
+
+    private fun startLoop(play: Boolean) {
+        looping = true
+        frameIndex = -1
+        loopRow.visibility = View.VISIBLE
+        requestLoopFrames()
+        setPlaying(play)
+        rebuild()
+    }
+
+    /** One scan back or forward (opens the loop bar paused when it isn't showing). */
+    private fun stepFrame(d: Int) {
+        if (!looping) startLoop(play = false)
+        setPlaying(false)
+        val n = loopLength()
+        val cur = if (frameIndex < 0) n - 1 else frameIndex
+        val next = (cur + d).coerceIn(0, n - 1)
+        frameIndex = if (next == n - 1) -1 else next
+        rebuild()
     }
 
     private fun setPlaying(p: Boolean) {
@@ -728,21 +909,55 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         setPlaying(false)
         frameIndex = -1
         loopRow.visibility = View.GONE
-        dm.stopLoop()
+        if (!wantPreviousScans()) dm.stopLoop()
         rebuild()
     }
 
-    private fun requestLoopFrames() {
-        val moments = prefs.panelProducts.take(state.panelCount).map { it.moment }.toSet()
-        dm.requestLoop(prefs.loopFrames - 1, prefs.tilt, moments)
+    private fun onMeteredNetwork(): Boolean = try {
+        (getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager).isActiveNetworkMetered
+    } catch (_: Exception) { false }
+
+    /**
+     * Whether the previous scans should be kept loaded right now: always while the loop is open or the
+     * Σ trail is on; otherwise on Wi-Fi, or on mobile data (when allowed) for the lowest tilts, where a
+     * scan costs a couple of MB – higher tilts need most of each file.
+     */
+    fun wantPreviousScans(): Boolean {
+        if (prefs.previousScans <= 0) return false
+        if (looping || prefs.trail) return true
+        if (!onMeteredNetwork()) return true
+        return prefs.prefetchOnMobile && prefs.tilt <= 1.05f
     }
 
-    /** Archive frames older than the newest volume (that one is always the last frame). */
-    private fun loopFrameList(): List<DataManager.Frame> {
-        val newest = (dm.live ?: dm.complete)?.startMs ?: Long.MAX_VALUE
-        val completeMs = dm.complete?.startMs ?: Long.MAX_VALUE
-        val cut = minOf(newest, if (dm.live != null) Long.MAX_VALUE else completeMs) - 30_000
-        return dm.frames.filter { it.timeMs < cut }
+    /** Asks for the previous scans of the tilt and products on screen (or stops asking when not wanted). */
+    fun requestLoopFrames() {
+        if (!::dm.isInitialized || site == null) return
+        main.removeCallbacks(loopRequestTask)
+        if (!wantPreviousScans()) { dm.stopLoop(); return }
+        dm.requestLoop(prefs.previousScans, prefs.tilt, neededMoments())
+    }
+
+    private fun neededMoments(): Set<String> = prefs.panelProducts.take(state.panelCount).map { it.moment }.toSet()
+
+    /** The previous scans for the tilt and products on screen, oldest first (the newest volume comes after them). */
+    private fun loopFrameList(): List<LoopFrame> {
+        val cut = (nowVolumeMs() ?: Long.MAX_VALUE) - 30_000
+        return LoopSupport.select(dm.frames, prefs.tilt, neededMoments(), cut, prefs.previousScans)
+    }
+
+    /**
+     * Start time of the volume shown as "now": the scan in progress once it has reached the tilt on
+     * screen (as [pick] decides), else the newest complete one.
+     */
+    private fun nowVolumeMs(): Long? {
+        val live = dm.live
+        if (live != null) {
+            val ts = tiltsOf(live)
+            val i = Tilts.closest(ts, prefs.tilt)
+            if (i >= 0 && abs(ts[i].elevation - prefs.tilt) < 0.3f &&
+                neededMoments().any { m -> (ts[i].sweep(m)?.nRays ?: 0) >= 40 }) return live.startMs
+        }
+        return dm.complete?.startMs ?: live?.startMs
     }
 
     /** Loop frames (oldest first) followed by the newest data. */
@@ -755,7 +970,8 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     }
 
     override fun onFrames() {
-        if (looping) rebuild()
+        // the trail and the loop bar use the previous scans
+        if (looping || prefs.trail) rebuild()
     }
 
     override fun onAlerts() {
@@ -807,7 +1023,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         val labels = ArrayList<OverlayView.MapLabel>()
         fun nearRadar(minLat: Float, maxLat: Float, minLon: Float, maxLon: Float) =
             Geo.distanceKm(s.lat, s.lon, s.lat.coerceIn(minLat.toDouble(), maxLat.toDouble()), s.lon.coerceIn(minLon.toDouble(), maxLon.toDouble())) < 2200
-        if (prefs.layer("outlook")) {
+        if (prefs.layer("outlook") && dm.outlookShownDay == prefs.outlookDay) {
             val cats = dm.outlook.filter { it.category == "CATEGORICAL" && Spc.catIndex(it.threshold) >= 0 }.sortedBy { Spc.catIndex(it.threshold) }
             val xy = FloatArray(2)
             for (a in cats) {
@@ -855,13 +1071,22 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     fun updateStatusLine() {
         val s = site ?: return
         val newest = listOfNotNull(dm.live, dm.complete).maxOfOrNull { it.startMs }
-        val text = when {
-            statusText.isNotEmpty() -> statusText
-            newest != null -> "${s.place}, ${s.state} · ${if (dm.live != null) "Live · " else ""}${Time.age(newest)}"
-            else -> "${s.place}, ${s.state}"
+        if (statusText.isNotEmpty() || newest == null) {
+            siteSub.text = statusText.ifEmpty { "${s.place}, ${s.state}" }
+            siteSub.setTextColor(if (statusError) C.warnText else C.dim)
+            return
         }
-        siteSub.text = text
-        siteSub.setTextColor(if (statusError) 0xffffa060.toInt() else C.dim)
+        // a dot showing how fresh the data is: green while scanning or recent, then amber, then red
+        val ageMin = (System.currentTimeMillis() - newest) / 60_000.0
+        val scanning = dm.live != null && System.currentTimeMillis() - dm.lastDataMs < 3 * 60_000L
+        val dot = when { scanning || ageMin < 12 -> C.ok; ageMin < 25 -> C.amber; else -> C.danger }
+        val sb = SpannableStringBuilder()
+        sb.append("● ")
+        sb.setSpan(ForegroundColorSpan(dot), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        sb.append(if (scanning) "Live · scanning · " else if (dm.live != null) "Live · " else "")
+        sb.append(Time.age(newest)).append(" · ${s.place}, ${s.state}")
+        siteSub.text = sb
+        siteSub.setTextColor(C.dim)
     }
 
     private fun tiltsOf(v: Volume?): List<Tilt> = if (v == null) emptyList() else Tilts.build(v)
@@ -878,15 +1103,18 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
 
     private class Pick(val field: Field?, val note: String?)
 
+    /** A loop frame's field for [p] at the tilt on screen. */
+    private fun frameField(fr: LoopFrame, p: Product): Field? {
+        val ts = tiltsOf(fr.volume)
+        val i = Tilts.closest(ts, prefs.tilt)
+        return if (i >= 0) fieldOf(fr.volume, ts[i], p) else null
+    }
+
     /** The field to show for a product: the scan in progress when it has reached this tilt, else the newest complete volume. */
-    private fun pick(p: Product): Pick {
+    private fun pick(p: Product, frames: List<LoopFrame> = if (looping) loopFrameList() else emptyList()): Pick {
         val angle = prefs.tilt
-        val frames = if (looping) loopFrameList() else emptyList()
         if (looping && frameIndex >= 0 && frameIndex < frames.size) {
-            val fr = frames[frameIndex]
-            val ts = tiltsOf(fr.volume)
-            val i = Tilts.closest(ts, angle)
-            val f = if (i >= 0) fieldOf(fr.volume, ts[i], p) else null
+            val f = frameField(frames[frameIndex], p)
             return Pick(f, if (f == null) "not in this frame" else null)
         }
         val live = dm.live
@@ -909,6 +1137,96 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         }
         return Pick(null, "loading…")
     }
+
+    // ---------------------------------------------------------------- dealiasing and the Σ trail
+    /** The dealiased copy of a velocity / SRV field once it's ready (the original until then). */
+    private fun dealiased(f: Field, force: Boolean = true): Field {
+        if (!prefs.dealias || !f.product.isDoppler || f.nyquist <= 0f) return f
+        // velocity and SRV share the same unfolded data: one job per sweep
+        val key = "D|${f.site}/${f.volumeMs}/${f.sweepMs}/${f.elevation}/${f.nRays}/${f.variant}"
+        val vel = derived.get(key, force) { Dealias.field(f.withCodes(f.codes8, f.codes16, f.variant, product = Product.VEL, stormU = 0f, stormV = 0f)) } ?: return f
+        return if (f.product == Product.VEL) vel else vel.withCodes(vel.codes8, vel.codes16, vel.variant, product = f.product, stormU = f.stormU, stormV = f.stormV)
+    }
+
+    private fun dealiasKey(f: Field) = "D|${f.site}/${f.volumeMs}/${f.sweepMs}/${f.elevation}/${f.nRays}/${f.variant}"
+
+    /** The dealiased velocity [vel] as [f]'s product (SRV keeps its storm motion). */
+    private fun asProduct(vel: Field, f: Field) =
+        if (f.product == Product.VEL) vel else vel.withCodes(vel.codes8, vel.codes16, vel.variant, product = f.product, stormU = f.stormU, stormV = f.stormV)
+
+    /** Dealiased (when on) without caching the result – for trail steps when memory is short. Background thread. */
+    private fun dealiasOnly(f: Field): Field {
+        if (!prefs.dealias || !f.product.isDoppler || f.nyquist <= 0f) return f
+        val vel = Dealias.field(f.withCodes(f.codes8, f.codes16, f.variant, product = Product.VEL, stormU = 0f, stormV = 0f)) ?: return f
+        return asProduct(vel, f)
+    }
+
+    /** [dealiased] if it's ready, without queueing anything. */
+    private fun dealiasedPeek(f: Field): Field {
+        if (!prefs.dealias || !f.product.isDoppler || f.nyquist <= 0f) return f
+        val vel = derived.peek("D|${f.site}/${f.volumeMs}/${f.sweepMs}/${f.elevation}/${f.nRays}/${f.variant}") ?: return f
+        return if (f.product == Product.VEL) vel else vel.withCodes(vel.codes8, vel.codes16, vel.variant, product = f.product, stormU = f.stormU, stormV = f.stormV)
+    }
+
+    /** Same as [dealiased], on the background thread (inside a trail job). */
+    private fun dealiasedNow(f: Field): Field {
+        if (!prefs.dealias || !f.product.isDoppler || f.nyquist <= 0f) return f
+        val key = "D|${f.site}/${f.volumeMs}/${f.sweepMs}/${f.elevation}/${f.nRays}/${f.variant}"
+        val vel = derived.now(key) { Dealias.field(f.withCodes(f.codes8, f.codes16, f.variant, product = Product.VEL, stormU = 0f, stormV = 0f)) } ?: return f
+        return if (f.product == Product.VEL) vel else vel.withCodes(vel.codes8, vel.codes16, vel.variant, product = f.product, stormU = f.stormU, stormV = f.stormV)
+    }
+
+    private fun trailKey(chain: List<Field>) =
+        "T|${prefs.dealias}|" + chain.joinToString("|") { it.key }.hashCode() + "|" + chain.size + "|" + chain.last().key
+
+    /**
+     * The Σ trail ending with [chain]'s last field (chain: the frames up to the one shown, oldest first),
+     * or null while it's being made. One job builds every step of the chain, so playing the loop
+     * afterwards finds each frame's trail ready.
+     */
+    private fun trailOf(chain: List<Field>, p: Product, request: Boolean = true): Field? {
+        if (chain.size < 2) return null
+        val key = trailKey(chain)
+        if (!request) return derived.peek(key)
+        return derived.get(key, force = true) {
+            // keep every step (each loop frame's trail) only when they all fit; otherwise just the end
+            val stepBytes = (chain.last().codes8?.size?.toLong() ?: (chain.last().codes16!!.size * 2L))
+            val keepSteps = derived.roomFor(stepBytes * chain.size * if (prefs.dealias) 2 else 1)
+            var acc: Field? = null
+            for (k in chain.indices) {
+                val cur = if (keepSteps) dealiasedNow(chain[k]) else derived.peek(dealiasKey(chain[k]))?.let { vel -> asProduct(vel, chain[k]) } ?: dealiasOnly(chain[k])
+                val prev = acc
+                acc = if (prev == null) cur else {
+                    val sub = trailKey(chain.subList(0, k + 1))
+                    // the variant names the exact chain, so a different chain never reuses this one's GPU copy
+                    val variant = "trail${k + 1}#${Integer.toHexString(sub.hashCode())}"
+                    // a scan still in progress covers only part of the circle: add it onto the trail so far
+                    val make = { if (!cur.complete) Trail.combine(prev, cur, Trail.rule(p), variant) else Trail.combine(cur, prev, Trail.rule(p), variant) }
+                    if (keepSteps || k == chain.size - 1) derived.now(sub, make) else (derived.peek(sub) ?: make())
+                }
+            }
+            acc
+        }
+    }
+
+    /** What a panel shows for [base] (frame [index] of [frames], -1 = newest): dealiased and/or as a Σ trail. */
+    private fun display(base: Field?, p: Product, frames: List<LoopFrame>, index: Int, request: Boolean = true): Field? {
+        base ?: return null
+        if (!request) {
+            // preloading loop frames for the GPU: only what's ready, nothing new queued
+            if (!prefs.trail || frames.isEmpty()) return if (prefs.dealias && p.isDoppler) dealiasedPeek(base) else base
+        } else if (!prefs.trail || frames.isEmpty()) return dealiased(base, force = index < 0 || index == shownFrame())
+        // wait for the previous scans to finish loading: they arrive newest first, which would restart the trail each time
+        if (dm.loopTotal > 0 && dm.loopReady < dm.loopTotal) return if (request) dealiased(base) else dealiasedPeek(base)
+        val upto = if (index < 0 || index >= frames.size) frames else frames.subList(0, index + 1)
+        val chain = ArrayList<Field>(upto.size + 1)
+        for (fr in upto) frameField(fr, p)?.let { chain.add(it) }
+        if (index < 0 || index >= frames.size) chain.add(base) else if (chain.lastOrNull() !== base) chain.add(base)
+        return trailOf(chain, p, request) ?: if (request) dealiased(base) else dealiasedPeek(base)
+    }
+
+    /** Index of the loop frame on screen (-1: the newest). */
+    private fun shownFrame() = if (looping) frameIndex else -1
 
     private fun layerColor(name: String) = when (name) {
         "states" -> C.states; "countries" -> C.countries; "counties" -> C.counties; "lakes" -> C.lakes
@@ -974,14 +1292,25 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         val panelDraws = ArrayList<PanelDraw>()
         val infos = ArrayList<OverlayView.PanelInfo>()
         val siteId = site?.id ?: ""
+        val frames = if (looping || prefs.trail) loopFrameList() else emptyList()
+        val shownIndex = shownFrame()
+        val baseTimes = ArrayList<Long?>()          // the scan each panel shows (a trail's own times can be older)
         for (i in 0 until state.panelCount) {
             val p = products[i]
             val table = palettes.table(p.palette)
-            val pk = pick(p)
-            panelDraws.add(PanelDraw(pk.field, table, prefs.smooth))
-            val f = pk.field
-            val title = "$siteId  ${p.short} ${if (f != null) String.format(java.util.Locale.US, "%.1f°", f.elevation) else ""}".trim()
-            val sub = if (f != null) "${Time.hmsZ(f.sweepMs)} · ${Time.local(f.sweepMs)}" else (if (ref == null) "waiting for data" else "")
+            val pk = pick(p, frames)
+            val base = pk.field
+            baseTimes.add(base?.sweepMs)
+            val f = display(base, p, frames, shownIndex)
+            panelDraws.add(PanelDraw(f, table, prefs.smooth))
+            var title = "$siteId  ${p.short} ${if (base != null) String.format(java.util.Locale.US, "%.1f°", base.elevation) else ""}".trim()
+            if (base != null) {
+                val v = f?.variant ?: ""
+                val n = TRAIL_RE.find(v)?.groupValues?.get(1)
+                if (n != null) title += "  Σ $n scans" else if (prefs.trail && frames.isNotEmpty()) title += "  Σ …"
+                if (prefs.dealias && p.isDoppler && base.nyquist > 0f) title += if (n != null || v.contains("dealiased")) "  dealiased" else "  dealiasing…"
+            }
+            val sub = if (base != null) "${Time.hmsZ(base.sweepMs)} · ${Time.local(base.sweepMs)}" else (if (ref == null) "waiting for data" else "")
             infos.add(OverlayView.PanelInfo(p, f, table, title, sub, pk.note))
         }
 
@@ -1001,30 +1330,38 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             if (prefs.layer("rings")) rings?.let { layers.add(LayerDraw(it, C.rings, 1.0f * d, 2500f)) }
         }
 
-        // loop frames to keep on the GPU so playback is smooth
+        // loop frames to keep on the GPU so playback is smooth (what each frame shows: trail / dealiased)
         val keep = ArrayList<Field>()
         if (looping) {
-            for (fr in loopFrameList()) {
-                val ts = tiltsOf(fr.volume)
-                val i = Tilts.closest(ts, prefs.tilt)
-                if (i < 0) continue
-                for (k in 0 until state.panelCount) fieldOf(fr.volume, ts[i], products[k])?.let { keep.add(it) }
+            for ((k, fr) in frames.withIndex()) {
+                for (pi in 0 until state.panelCount) {
+                    val p = products[pi]
+                    // dealiasing every frame up front is worth it (playback then never waits); trails come from the shown frame's job
+                    display(frameField(fr, p), p, frames, k, request = !prefs.trail)?.let { keep.add(it) }
+                }
             }
-            val n = loopLength()
+            val n = frames.size + 1
             loopSeek.max = maxOf(0, n - 1)
-            val idx = if (frameIndex < 0) n - 1 else frameIndex
+            val idx = if (frameIndex < 0 || frameIndex >= frames.size) n - 1 else frameIndex
             loopSeek.progress = idx
-            val t = infos.firstOrNull()?.field?.sweepMs
-            loopTime.text = if (t != null) "${Time.local(t)}  ${idx + 1}/$n" else "${idx + 1}/$n"
+            val t = baseTimes.firstOrNull { it != null }
+            val loading = dm.loopTotal > 0 && dm.loopReady < dm.loopTotal
+            loopTime.text = when {
+                loading && n <= 1 -> "Loading ${dm.loopReady}/${dm.loopTotal}…"
+                t != null -> "${Time.local(t)}  ${idx + 1}/$n" + if (loading) " …" else ""
+                else -> "${idx + 1}/$n"
+            }
+            if (n <= 1 && !loading && dm.loopError != null) loopTime.text = "No earlier scans yet"
         }
 
         renderer.scene = Scene(C.mapBg, C.mapGap, layers, if (spcLayers.isEmpty()) alertLayers else spcLayers + alertLayers, panelDraws, keep)
         overlay.panels = infos
-        overlay.dataTimeMs = infos.getOrNull(state.activePanel)?.field?.sweepMs ?: infos.firstOrNull()?.field?.sweepMs ?: 0L
+        overlay.dataTimeMs = baseTimes.getOrNull(state.activePanel) ?: baseTimes.firstOrNull { it != null } ?: 0L
         overlay.showCities = prefs.layer("cities")
         overlay.showSites = prefs.layer("sites")
         overlay.invalidate()
         requestRender()
+        if (inspectAt != null && prefs.learn) updateLearnCard()
     }
 
     // ---------------------------------------------------------------- overlay callbacks
@@ -1064,7 +1401,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     }
 
     override fun onMapTapped(lat: Double, lon: Double): Boolean {
-        if (!prefs.layer("outlook") || dm.outlook.isEmpty()) return false
+        if (!prefs.layer("outlook") || dm.outlook.isEmpty() || dm.outlookShownDay != prefs.outlookDay) return false
         val hits = dm.outlook.filter { it.contains(lat, lon) }
         if (hits.none { it.category == "CATEGORICAL" }) return false
         Sheets.outlookDetail(this, lat, lon, hits)
@@ -1073,6 +1410,37 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
 
     override fun onUserMovedMap() {
         if (following) setFollowing(false)
+    }
+
+    private var inspectAt: FloatArray? = null
+
+    override fun onInspect(km: FloatArray?, panel: Int) {
+        inspectAt = km
+        updateLearnCard()
+    }
+
+    /** Learn mode: plain-language notes for the spot under the cross-hair (all products of the scan shown there). */
+    fun updateLearnCard() {
+        if (!::learnCard.isInitialized) return
+        val km = inspectAt
+        if (!prefs.learn || km == null) { learnCard.visibility = View.GONE; return }
+        val frames = if (looping) loopFrameList() else emptyList()
+        val ground = Math.hypot(km[0].toDouble(), km[1].toDouble())
+        val az = Geo.azimuthDeg(km[0].toDouble(), km[1].toDouble())
+        val shown = prefs.panelProducts.take(state.panelCount)
+        val velProduct = if (Product.SRV in shown) Product.SRV else Product.VEL
+        val values = HashMap<Product, Float>()
+        var beamFt: Double? = null
+        for (p in listOf(Product.REF, velProduct, Product.ZDR, Product.CC)) {
+            val base = pick(p, frames).field ?: continue
+            val sm = dealiased(base).sample(az, ground) ?: continue
+            if (!sm.rangeFolded) values[p] = sm.value
+            if (beamFt == null) beamFt = sm.heightKm * 3280.84
+        }
+        val notes = Learn.explain(values, beamFt)
+        learnCard.text = if (notes.isEmpty()) "No echo here. Press and hold on the coloured radar data to see what it means."
+            else notes.joinToString("\n") + "\nTap for the radar guide."
+        learnCard.visibility = View.VISIBLE
     }
 
     private var pendingZoom: Alert? = null
@@ -1518,6 +1886,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         const val REQ_LOCATION_LIVE = 13
         const val REQ_IMPORT_PAL = 21
         /** Bump to show the "what's new" sheet once after an update. */
-        const val WHATS_NEW = "1.3.0"
+        const val WHATS_NEW = "1.4.0"
+        private val TRAIL_RE = Regex("trail(\\d+)")
     }
 }

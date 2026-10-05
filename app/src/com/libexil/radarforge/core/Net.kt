@@ -18,7 +18,8 @@ object Net {
         c.readTimeout = timeoutMs
         c.instanceFollowRedirects = true
         c.setRequestProperty("User-Agent", userAgent)
-        c.setRequestProperty("Accept-Encoding", "gzip")
+        // a byte range must refer to the file itself, not a compressed copy of it
+        c.setRequestProperty("Accept-Encoding", if (range > 0) "identity" else "gzip")
         if (accept != null) c.setRequestProperty("Accept", accept)
         if (range > 0) c.setRequestProperty("Range", "bytes=$range-")
         val code = c.responseCode

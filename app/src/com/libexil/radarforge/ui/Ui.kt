@@ -26,39 +26,56 @@ import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 
-/** RadarForge Dark (same colours as the PC version's default theme). */
+/**
+ * The current theme's colours (RadarForge Dark until [Themes.apply] sets another). Views read these
+ * when they're built, so a theme change rebuilds the screen.
+ */
 object C {
-    val window = 0xff26272d.toInt()
-    val panel = 0xff1e1f24.toInt()
-    val alt = 0xff2a2b31.toInt()
-    val header = 0xff1f2025.toInt()
-    val button = 0xff303138.toInt()
-    val border = 0xff3a3c45.toInt()
-    val text = 0xffe1e1e6.toInt()
-    val dim = 0xff8d909b.toInt()
-    val accent = 0xff3c6ec8.toInt()
-    val accentText = 0xffffffff.toInt()
+    var themeName = "RadarForge Dark"
+    var dark = true
+    var window = 0xff26272d.toInt()
+    var panel = 0xff1e1f24.toInt()
+    var alt = 0xff2a2b31.toInt()
+    var header = 0xff1f2025.toInt()
+    var button = 0xff303138.toInt()
+    var border = 0xff3a3c45.toInt()
+    var text = 0xffe1e1e6.toInt()
+    var dim = 0xff8d909b.toInt()
+    var accent = 0xff3c6ec8.toInt()
+    var accentText = 0xffffffff.toInt()
     val danger = 0xffe0524f.toInt()
     val ok = 0xff3fae6a.toInt()
+    val amber = 0xffe8a33a.toInt()
 
-    val mapBg = 0xff08080c.toInt()
-    val mapGap = 0xff1f1f24.toInt()
-    val states = 0xffe1e1e1.toInt()
-    val countries = 0xffd7d7d7.toInt()
-    val counties = 0xe6696969.toInt()
-    val roads = 0xebaf4646.toInt()
-    val roads2 = 0xdc78553c.toInt()
-    val lakes = 0xc8466eaa.toInt()
-    val rings = 0x96c8c8d7.toInt()
-    val cityText = 0xffe1e1e1.toInt()
-    val siteText = 0xffcde6d2.toInt()
-    val site88d = 0xff28965a.toInt()
-    val siteCurrent = 0xffffd700.toInt()
-    val labelBg = 0xb9000000.toInt()
-    val halo = 0xdc000000.toInt()
-    val panelBorder = 0xff464650.toInt()
-    val activeBorder = 0xff5a8cdc.toInt()
-    val location = 0xff4aa3ff.toInt()
+    var mapBg = 0xff08080c.toInt()
+    var mapGap = 0xff1f1f24.toInt()
+    var states = 0xffe1e1e1.toInt()
+    var countries = 0xffd7d7d7.toInt()
+    var counties = 0xe6696969.toInt()
+    var roads = 0xebaf4646.toInt()
+    var roads2 = 0xdc78553c.toInt()
+    var lakes = 0xc8466eaa.toInt()
+    var rings = 0x96c8c8d7.toInt()
+    var cityText = 0xffe1e1e1.toInt()
+    var cityDot = 0xffe6e6e6.toInt()
+    var siteText = 0xffcde6d2.toInt()
+    var site88d = 0xff28965a.toInt()
+    var siteCurrent = 0xffffd700.toInt()
+    var labelBg = 0xb9000000.toInt()
+    var labelText = 0xfff0f0f5.toInt()
+    var halo = 0xdc000000.toInt()
+    var panelBorder = 0xff464650.toInt()
+    var activeBorder = 0xff5a8cdc.toInt()
+    var location = 0xff4aa3ff.toInt()
+
+    // derived from the theme (see Themes.apply)
+    var ripple = 0x33ffffff
+    var handle = 0xff55575f.toInt()
+    var link = 0xff8fb4ff.toInt()
+    var accentSoft = 0x333c6ec8
+    var warnText = 0xffffa060.toInt()
+    var noteText = 0xffffc35a.toInt()
+    var switchOff = 0xffb0b2ba.toInt()
 }
 
 fun Context.dp(v: Float): Float = v * resources.displayMetrics.density
@@ -73,11 +90,11 @@ fun rounded(color: Int, radiusPx: Float, stroke: Int = 0, strokePx: Int = 0) = G
 }
 
 fun ripple(base: android.graphics.drawable.Drawable?, mask: android.graphics.drawable.Drawable? = null) =
-    RippleDrawable(ColorStateList.valueOf(0x33ffffff), base, mask ?: base ?: ColorDrawable(Color.WHITE))
+    RippleDrawable(ColorStateList.valueOf(C.ripple), base, mask ?: base ?: ColorDrawable(Color.WHITE))
 
 // ------------------------------------------------------------------------- icons
 enum class Icon { MORE, LAYERS, WARNING, PLAY, PAUSE, LOCATE, PANELS1, PANELS2, PANELS4, UP, DOWN, CLOSE, SEARCH, REFRESH, RADAR, CHECK, SLIDERS,
-    RULER, SHARE, STAR, STAR_ON, UNDO, TRASH }
+    RULER, SHARE, STAR, STAR_ON, UNDO, TRASH, PREV, NEXT, PALETTE, BOOK }
 
 /** Small vector icons drawn in code (no image resources needed). */
 class IconView(ctx: Context, icon: Icon, private var tint: Int = C.text) : View(ctx) {
@@ -179,6 +196,23 @@ class IconView(ctx: Context, icon: Icon, private var tint: Int = C.text) : View(
                 path.lineTo(10f, 20.5f)
                 c.drawPath(path, p)
             }
+            Icon.PREV -> { path.moveTo(15f, 5f); path.lineTo(8f, 12f); path.lineTo(15f, 19f); c.drawPath(path, p) }
+            Icon.NEXT -> { path.moveTo(9f, 5f); path.lineTo(16f, 12f); path.lineTo(9f, 19f); c.drawPath(path, p) }
+            Icon.PALETTE -> {
+                path.moveTo(12f, 2.5f)
+                path.cubicTo(6f, 2.5f, 2.5f, 7f, 2.5f, 12f); path.cubicTo(2.5f, 17.5f, 7f, 21.5f, 11.5f, 21.5f)
+                path.cubicTo(13.5f, 21.5f, 13.5f, 19f, 12.5f, 18f); path.cubicTo(11.5f, 16.5f, 12.5f, 15f, 14.5f, 15f)
+                path.lineTo(17f, 15f); path.cubicTo(19.8f, 15f, 21.5f, 13.2f, 21.5f, 11f); path.cubicTo(21.5f, 6f, 17.5f, 2.5f, 12f, 2.5f)
+                c.drawPath(path, p)
+                p.style = Paint.Style.FILL
+                c.drawCircle(7.5f, 11.5f, 1.6f, p); c.drawCircle(10f, 7f, 1.6f, p); c.drawCircle(15f, 7.2f, 1.6f, p)
+            }
+            Icon.BOOK -> {
+                path.moveTo(12f, 6f); path.cubicTo(9.5f, 4.3f, 6f, 4f, 3f, 4.8f); path.lineTo(3f, 19f); path.cubicTo(6f, 18.2f, 9.5f, 18.5f, 12f, 20f)
+                path.cubicTo(14.5f, 18.5f, 18f, 18.2f, 21f, 19f); path.lineTo(21f, 4.8f); path.cubicTo(18f, 4f, 14.5f, 4.3f, 12f, 6f); path.close()
+                c.drawPath(path, p)
+                c.drawLine(12f, 6f, 12f, 20f, p)
+            }
             Icon.TRASH -> {
                 c.drawLine(3.5f, 6f, 20.5f, 6f, p)
                 path.moveTo(9f, 6f); path.lineTo(9f, 3.2f); path.lineTo(15f, 3.2f); path.lineTo(15f, 6f)
@@ -247,6 +281,15 @@ object W {
             background = ripple(rounded(bg, dp(16f), if (selectedState) C.accent else C.border, dpi(1f)))
             setTextColor(if (selectedState) C.accentText else C.text)
         }
+
+        /** Grid chips: square-ish corners and room for two words. */
+        fun asTile() {
+            textSize = 13f
+            minWidth = 0
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(dpi(6f), dpi(9f), dpi(6f), dpi(9f))
+        }
     }
 
     fun chip(ctx: Context, label: String, selected: Boolean = false, onClick: (Chip) -> Unit) = Chip(ctx, label).apply {
@@ -289,8 +332,8 @@ object W {
         row.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         val sw = Switch(ctx).apply {
             isChecked = checked
-            thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(C.accent, 0xffb0b2ba.toInt()))
-            trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(0x993c6ec8.toInt(), 0x66808390))
+            thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(C.accent, C.switchOff))
+            trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(Themes.withAlpha(C.accent, 0x99), 0x66808390))
             setOnCheckedChangeListener { _, v -> onChange(v) }
         }
         row.addView(sw)
@@ -342,12 +385,12 @@ object W {
                 highlighted: Boolean = false, onClick: () -> Unit): View {
         val row = hRow(ctx).apply {
             setPadding(ctx.dpi(12f), ctx.dpi(11f), ctx.dpi(12f), ctx.dpi(11f))
-            background = ripple(if (highlighted) rounded(0x333c6ec8, ctx.dp(10f)) else null, rounded(Color.WHITE, ctx.dp(10f)))
+            background = ripple(if (highlighted) rounded(C.accentSoft, ctx.dp(10f)) else null, rounded(Color.WHITE, ctx.dp(10f)))
             isClickable = true
             setOnClickListener { onClick() }
         }
         val col = vCol(ctx)
-        col.addView(text(ctx, title, 15.5f, if (highlighted) 0xff8fb4ff.toInt() else C.text, true).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END })
+        col.addView(text(ctx, title, 15.5f, if (highlighted) C.link else C.text, true).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END })
         if (subtitle != null) col.addView(text(ctx, subtitle, 13f, C.dim).apply { setPadding(0, ctx.dpi(3f), 0, 0); maxLines = 2; ellipsize = TextUtils.TruncateAt.END })
         row.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         if (trailing != null) row.addView(text(ctx, trailing, 13f, C.dim).apply { setPadding(ctx.dpi(8f), 0, 0, 0) })
@@ -364,6 +407,51 @@ object W {
         background = ripple(rounded(if (primary) C.accent else C.button, ctx.dp(10f), C.border, if (primary) 0 else ctx.dpi(1f)))
         isClickable = true
         setOnClickListener { onClick() }
+    }
+}
+
+/**
+ * Lays its children out in equal columns, as many as fit (at least two): the Quick switches grid.
+ * Children are measured to the column width.
+ */
+class ChipGrid(ctx: Context, private val minColDp: Float = 104f, private val gapDp: Float = 6f) : ViewGroup(ctx) {
+    private fun cols(w: Int): Int = maxOf(2, minOf(5, ((w + dpi(gapDp)) / dpi(minColDp + gapDp))))
+
+    override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+        val w = MeasureSpec.getSize(widthSpec) - paddingLeft - paddingRight
+        val n = cols(w)
+        val gap = dpi(gapDp)
+        val cw = (w - gap * (n - 1)) / n
+        var h = 0
+        var rowH = 0
+        for (i in 0 until childCount) {
+            val c = getChildAt(i)
+            c.measure(MeasureSpec.makeMeasureSpec(cw, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
+            rowH = maxOf(rowH, c.measuredHeight)
+            if (i % n == n - 1 || i == childCount - 1) { h += rowH + if (i == childCount - 1) 0 else gap; rowH = 0 }
+        }
+        setMeasuredDimension(MeasureSpec.getSize(widthSpec), h + paddingTop + paddingBottom)
+    }
+
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        val w = r - l - paddingLeft - paddingRight
+        val n = cols(w)
+        val gap = dpi(gapDp)
+        val cw = (w - gap * (n - 1)) / n
+        var y = paddingTop
+        var i = 0
+        while (i < childCount) {
+            var rowH = 0
+            for (k in 0 until n) {
+                if (i + k >= childCount) break
+                val c = getChildAt(i + k)
+                val x = paddingLeft + k * (cw + gap)
+                c.layout(x, y, x + cw, y + c.measuredHeight)
+                rowH = maxOf(rowH, c.measuredHeight)
+            }
+            y += rowH + gap
+            i += n
+        }
     }
 }
 
@@ -399,7 +487,7 @@ class SheetHost(ctx: Context) : FrameLayout(ctx) {
             elevation = dp(12f)
         }
         // grab handle
-        col.addView(View(ctx).apply { background = rounded(0xff55575f.toInt(), dp(2f)) },
+        col.addView(View(ctx).apply { background = rounded(C.handle, dp(2f)) },
             LinearLayout.LayoutParams(dpi(36f), dpi(4f)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dpi(8f) })
         val head = W.hRow(ctx).apply { setPadding(dpi(18f), dpi(6f), dpi(6f), dpi(2f)) }
         head.addView(W.text(ctx, title, 18f, C.text, true), LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
