@@ -6,7 +6,7 @@ It is a separate app with its own code, built in the spirit of the
 
 Live Level II data from any of the 160 NEXRAD radars, drawn tilt by tilt while the radar is still
 scanning, with 1, 2 or 4 linked panels, loops that are ready the moment you pick a radar, NWS warnings,
-GR-style colour tables, dealiasing, a Σ max-value trail, and the same six themes as RadarForge for PC.
+GR-style colour tables (WxVortex, Enhanced velocity and Heatseaker CC by default), dealiasing, a Σ max-value trail, and the same six themes as RadarForge for PC.
 
 **Contents:** [Install](#install) · [Features](#features) · [Using it](#using-it) ·
 [Building from source](#building-from-source) · [Project layout](#project-layout) · [Changelog](CHANGELOG.md) · [License](#license)
@@ -53,8 +53,9 @@ You need an Android phone or tablet with **Android 8.0 or newer** (almost any ph
 - **NWS warnings** (tornado, severe thunderstorm, flash flood, marine, snow squall, special weather
   statements) and **watches**, with tornado and flash flood emergencies highlighted. Tap one to read it.
   Every warning type and threat level (TOR, TORR, TORP, TORE, SVR, SVRC, SVRD, FFW, FFWC, FFWE…) has
-  its own line – colour, width and style – with NWS colours by default. "Show on map" switches to the
-  radar nearest the warning.
+  its own line – colour, width and style – with the classic colours by default (NWS colours one tap away).
+  "Show on map" switches to the radar nearest the warning. Previous scans show the warnings of their own
+  time, and new warnings flash on the map for a few seconds.
 - **Inspector:** press and hold anywhere to read the value, the distance and bearing from the radar,
   the beam height and the latitude/longitude.
 - **Measuring tools:** distance and bearing between any points, and a storm track that shows when

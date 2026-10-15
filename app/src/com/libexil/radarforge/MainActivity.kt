@@ -113,6 +113,24 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     var geo: SiteGeo? = null
     private var rings: ProjectedLayer? = null
     private var alertLayers: List<LayerDraw> = emptyList()
+    /** The scan whose warnings are shown (null: the newest, so what's in force now). */
+    private var alertTimeShown: Long? = null
+    private val alertProj = HashMap<String, Pair<Any, ProjectedLayer>>()     // warning id -> (projection, outline)
+    // new warnings flash for a few seconds (and upgraded ones, e.g. a tornado warning becoming "observed")
+    private var knownAlerts: Map<String, Float>? = null
+    private val flashing = HashMap<String, LongArray>()                      // event key -> [start, end] ms
+    private val flashTick = object : Runnable {
+        override fun run() {
+            val now = System.currentTimeMillis()
+            flashing.entries.removeAll { it.value[1] <= now }
+            rebuildAlerts()
+            val sc = renderer.scene
+            renderer.scene = Scene(sc.mapBg, sc.gapBg, sc.layers, if (spcLayers.isEmpty()) alertLayers else spcLayers + alertLayers,
+                sc.panels, sc.keep)
+            requestRender()
+            if (flashing.isNotEmpty()) main.postDelayed(this, 50)
+        }
+    }
     private var spcLayers: List<LayerDraw> = emptyList()
     var visibleAlerts: List<Alert> = emptyList()
     /** Storm reports near the radar that pass the filters (what's drawn). */
@@ -972,12 +990,34 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     override fun onFrames() {
         // the trail and the loop bar use the previous scans
         if (looping || prefs.trail) rebuild()
+        if (dm.alertHistory.isEmpty()) dm.loadAlertHistory(true)     // so each previous scan shows its own warnings
     }
 
     override fun onAlerts() {
+        noteNewAlerts()
         rebuildAlerts()
         rebuild()
         checkWarningsAtLocation()
+    }
+
+    /** Warnings that weren't there at the last update (or were upgraded to a higher threat) flash on the map. */
+    private fun noteNewAlerts() {
+        val secs = prefs.warnFlashS
+        val now = System.currentTimeMillis()
+        val known = HashMap<String, Float>()
+        val before = knownAlerts
+        for (a in dm.alerts) {
+            if (a.isWatch || a.event.endsWith("Statement")) continue
+            val k = Alerts.eventKey(a.trackKey)
+            val pri = Alerts.VARIANTS[a.variant]?.priority ?: 0f
+            known[k] = maxOf(pri, known[k] ?: 0f)
+            if (before == null || secs <= 0) continue
+            val old = before[k]
+            val fresh = a.sentMs == 0L || now - a.sentMs < 20 * 60_000L
+            if ((old == null && fresh) || (old != null && pri > old)) flashing[k] = longArrayOf(now, now + secs * 1000L)
+        }
+        if (dm.alertsTime > 0) knownAlerts = known
+        if (flashing.isNotEmpty()) { main.removeCallbacks(flashTick); main.post(flashTick) }
     }
 
     override fun onFeed(name: String) {
@@ -1246,7 +1286,9 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         val v = Alerts.VARIANTS[code] ?: Alerts.VARIANTS.getValue("SPS")
         // 1.1.0 kept one colour per event: still honoured for the event's base line
         val legacy = if (Alerts.BASE_CODE[v.event] == code) prefs.warnColor(v.event) else null
-        return if (legacy != null) Alerts.Line(legacy, v.line.width, v.line.kind) else v.line
+        if (legacy != null) return Alerts.Line(legacy, v.line.width, v.line.kind)
+        // (1.5) the classic colours by default: green flash flood, yellow severe, magenta reported / PDS tornado
+        return Alerts.CLASSIC_PRESET[code] ?: v.line
     }
 
     fun warnColor(a: Alert): Int = warnLine(a.variant).color
@@ -1262,7 +1304,9 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             return
         }
         val s = g.site
-        val near = dm.alerts.filter { a ->
+        val t = alertTimeShown
+        val source = if (t == null) dm.alerts else Alerts.at(t, dm.alerts, dm.alertHistory)
+        val near = source.filter { a ->
             prefs.warnGroup(Alerts.group(a.event)) &&
                 Geo.distanceKm(s.lat, s.lon, (a.minLat + a.maxLat) / 2.0, (a.minLon + a.maxLon) / 2.0) < 900
         }
@@ -1270,11 +1314,27 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         overlay.alerts = near
         val d = resources.displayMetrics.density
         // higher threat levels drawn last, on top
-        alertLayers = near.sortedBy { Alerts.VARIANTS[it.variant]?.priority ?: 0f }.map { a ->
+        if (alertProj.size > 3000) alertProj.clear()
+        val now = System.currentTimeMillis()
+        val out = ArrayList<LayerDraw>()
+        for (a in near.sortedBy { Alerts.VARIANTS[it.variant]?.priority ?: 0f }) {
             val ln = warnLine(a.variant)
             val w = ln.width * d * 1.1f
-            LayerDraw(ProjectedLayer.fromRings(a.rings, g.proj), ln.color, w, halo = !a.isWatch, innerPx = w * ln.innerShare)
+            // (stepping through the loop rebuilds these often: each outline is projected once)
+            val cached = alertProj[a.id]
+            val layer = if (cached != null && cached.first === g.proj) cached.second
+                else ProjectedLayer.fromRings(a.rings, g.proj).also { alertProj[a.id] = g.proj to it }
+            val f = if (t == null) flashing[Alerts.eventKey(a.trackKey)] else null
+            if (f != null && now < f[1]) {
+                // newly issued: a glowing band pulsing around it (1.4 pulses a second)
+                val pulse = (0.5 + 0.5 * Math.cos((now - f[0]) / 1000.0 * 2 * Math.PI * 1.4)).toFloat()
+                val alpha = (60 + 150 * pulse).toInt().coerceIn(0, 255)
+                out.add(LayerDraw(layer, (alpha shl 24) or (ln.color and 0xffffff), w + (4f + 8f * pulse) * d))
+                out.add(LayerDraw(layer, ((200 * pulse).toInt().coerceIn(0, 255) shl 24) or 0xffffff, w + 1.5f * d))
+            }
+            out.add(LayerDraw(layer, ln.color, w, halo = !a.isWatch, innerPx = w * ln.innerShare))
         }
+        alertLayers = out
         val warnings = near.count { !it.isWatch }
         warnBtn.badge = if (warnings > 0) (if (warnings > 99) "99+" else warnings.toString()) else null
         warnBtn.setTint(if (near.any { it.event.startsWith("Tornado") && !it.isWatch }) 0xffff5a5a.toInt() else C.text)
@@ -1294,6 +1354,12 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         val siteId = site?.id ?: ""
         val frames = if (looping || prefs.trail) loopFrameList() else emptyList()
         val shownIndex = shownFrame()
+        // a previous scan shows the warnings of its own time; the newest, what's in force now
+        val wantAlertTime = if (looping && shownIndex in frames.indices) frames[shownIndex].timeMs else null
+        if (wantAlertTime != alertTimeShown) {
+            alertTimeShown = wantAlertTime
+            rebuildAlerts()
+        }
         val baseTimes = ArrayList<Long?>()          // the scan each panel shows (a trail's own times can be older)
         for (i in 0 until state.panelCount) {
             val p = products[i]

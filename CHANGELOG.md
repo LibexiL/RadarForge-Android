@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.5.0 – 2026-10-14
+
+* **New default colour tables:** WxVortex for reflectivity, Enhanced for velocity (in mph) and Heatseaker
+  for correlation coefficient. Colour tables you imported yourself are kept.
+* **Classic warning colours by default:**
+  * Green flash flood, yellow severe thunderstorm and red tornado.
+  * Magenta for a confirmed, PDS or emergency tornado.
+  * Warning lines → **NWS colours** switches back. Lines you changed yourself are kept.
+* **Previous scans show the warnings of their own time.** Stepping back through the loop shows the
+  warnings that were in force at each scan, with the polygons as they were then; an update can shrink a
+  warning. The newest scan shows what's in force now. The earlier warnings come from Iowa State's warning
+  archive.
+* **New warnings flash.** A warning that has just been issued, or upgraded (e.g. a tornado warning
+  becoming "observed"), pulses on the map for 8 seconds. To turn it off: Warning lines → Flash new warnings.
+
 ## 1.4.1 – 2026-10-05
 
 * **Fixed: the previous scans downloaded but never showed up**, so the loop stayed empty. Each file was

@@ -87,6 +87,12 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
         private set
     @Volatile var alertsTime = 0L
         private set
+    /** Every warning polygon over the previous scans' span, each with its time (so each scan shows its own). */
+    @Volatile var alertHistory: List<Alert> = emptyList()
+        private set
+    @Volatile private var historyFromMs = Long.MAX_VALUE
+    @Volatile private var historyAtMs = 0L
+    @Volatile private var historyBusy = false
     @Volatile var lastDataMs = 0L
         private set
 
@@ -473,7 +479,35 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
             } catch (e: Throwable) {
                 RfLog.w("warnings failed: $e")
             }
+            loadAlertHistory(false)
         }, 0, 90, TimeUnit.SECONDS)
+    }
+
+    /** The warnings of the previous scans' span (Iowa State), fetched again every few minutes while there are
+     *  previous scans; [force]: now (e.g. the first previous scans just came in). */
+    fun loadAlertHistory(force: Boolean) {
+        val fr = frames
+        if (!wantAlerts || fr.isEmpty() || historyBusy) return
+        val oldest = fr.minOf { it.timeMs } - 120_000
+        val now = System.currentTimeMillis()
+        if (!force && oldest >= historyFromMs && now - historyAtMs < 150_000) return
+        historyBusy = true
+        val run = Runnable {
+            try {
+                val h = Alerts.parseIem(Net.getText(Alerts.historyUrl(oldest, now + 60_000), 40_000))
+                alertHistory = h
+                historyFromMs = oldest
+                historyAtMs = System.currentTimeMillis()
+                RfLog.i("warning history: ${h.size} polygons")
+                post { listener?.onAlerts() }
+            } catch (e: Throwable) {
+                RfLog.w("warning history failed: $e")
+                historyAtMs = System.currentTimeMillis() - 90_000      // try again in a minute
+            } finally {
+                historyBusy = false
+            }
+        }
+        if (force) pool.execute(run) else run.run()
     }
 
     // ------------------------------------------------------------------ feeds: reports, chasers, SPC

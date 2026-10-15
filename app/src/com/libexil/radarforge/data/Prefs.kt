@@ -129,6 +129,11 @@ class Prefs(ctx: Context) {
         if (line == null) remove("wl_$code") else putString("wl_$code", "${line.color.toLong() and 0xffffffffL},${line.width},${line.kind}")
     }
 
+    /** Seconds a newly issued (or upgraded) warning flashes on the map; 0 = never. */
+    var warnFlashS: Int
+        get() = p.getInt("warn_flash_s", 8)
+        set(v) = put { putInt("warn_flash_s", v) }
+
     var goToNearestRadar: Boolean
         get() = p.getBoolean("go_nearest_radar", true)
         set(v) = put { putBoolean("go_nearest_radar", v) }

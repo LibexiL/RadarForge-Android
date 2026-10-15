@@ -19,6 +19,9 @@ class Alert(
     val trackKey: String = id,
     /** VTEC action: NEW, CON, EXT, EXA, EXB, UPG, CAN, EXP... ("" when there's none). */
     val action: String = "",
+    /** When this polygon applies (an update can shrink a warning: Iowa State's archive has one piece per polygon). */
+    val validFromMs: Long = sentMs,
+    val validToMs: Long = expiresMs,
 ) {
     val minLat: Float; val maxLat: Float; val minLon: Float; val maxLon: Float
 
@@ -244,6 +247,96 @@ object Alerts {
                 trackKey = vtec?.let { "${it.groupValues[2]}.${it.groupValues[3]}.${it.groupValues[4]}.${it.groupValues[5]}" } ?: p["id"].str(fo["id"].str()),
                 action = vtec?.groupValues?.get(1) ?: "",
             ))
+        }
+        out.sortBy { VARIANTS[it.variant]?.priority ?: 0f }
+        return out
+    }
+
+    // ---------------------------------------------------------------- warnings at a scan's time
+    const val IEM_SBW = "https://mesonet.agron.iastate.edu/geojson/sbw.geojson"
+
+    private val IEM_EVENT = mapOf("TO.W" to "Tornado Warning", "SV.W" to "Severe Thunderstorm Warning",
+        "FF.W" to "Flash Flood Warning", "MA.W" to "Special Marine Warning", "EW.W" to "Extreme Wind Warning",
+        "SQ.W" to "Snow Squall Warning", "DS.W" to "Dust Storm Warning", "TO.A" to "Tornado Watch",
+        "SV.A" to "Severe Thunderstorm Watch")
+
+    /** The address of every warning polygon in force between two times (Iowa State's archive). */
+    fun historyUrl(fromMs: Long, toMs: Long): String =
+        "$IEM_SBW?sts=${Time.isoMinute(fromMs)}&ets=${Time.isoMinute(toMs)}"
+
+    /** A warning's identity whatever the source: "OUN.TO.W.42" from "KOUN.TO.W.0042" (NWS) or "OUN.TO.W.42"
+     *  (Iowa State). Watches are numbered nationally, so the office is left out for them. */
+    fun eventKey(key: String): String {
+        val p = key.split(".")
+        if (p.size < 4) return key
+        val n = p[3].toIntOrNull() ?: return key
+        val office = if (p[2] == "A") "" else p[0].takeLast(3).uppercase()
+        return "$office.${p[1]}.${p[2]}.$n"
+    }
+
+    /** Iowa State's sbw.geojson: one Alert per polygon piece, each with the time it applied. */
+    fun parseIem(json: String): List<Alert> {
+        val out = ArrayList<Alert>()
+        for (f in Json.parse(json).obj()["features"].arr()) {
+            val fo = f.obj()
+            val p = fo["properties"].obj()
+            val ph = p["phenomena"].str(); val sig = p["significance"].str()
+            var ev = IEM_EVENT["$ph.$sig"] ?: continue
+            fun tag(k: String) = p[k].str().trim().uppercase()
+            val dmg = tag("damagetag")
+            val emergency = p["is_emergency"] == true
+            val pds = p["is_pds"] == true
+            if (ev == "Tornado Warning" && (emergency || dmg == "CATASTROPHIC")) ev = "Tornado Emergency"
+            if (ev == "Flash Flood Warning" && (emergency || dmg == "CATASTROPHIC")) ev = "Flash Flood Emergency"
+            val variant = when (ev) {
+                "Tornado Emergency" -> "TORE"
+                "Tornado Warning" -> when { dmg == "CONSIDERABLE" || pds -> "TORP"; tag("tornadotag") == "OBSERVED" -> "TORR"; else -> "TOR" }
+                "Severe Thunderstorm Warning" -> when (dmg) { "DESTRUCTIVE" -> "SVRD"; "CONSIDERABLE" -> "SVRC"; else -> "SVR" }
+                "Flash Flood Emergency" -> "FFWE"
+                "Flash Flood Warning" -> if (dmg == "CONSIDERABLE") "FFWC" else "FFW"
+                else -> BASE_CODE[ev] ?: "SPS"
+            }
+            val rings = ArrayList<FloatArray>()
+            val g = fo["geometry"].obj()
+            val coords = g["coordinates"].arr()
+            when (g["type"].str()) {
+                "Polygon" -> coords.firstOrNull()?.let { rings.add(ring(it)) }
+                "MultiPolygon" -> for (poly in coords) poly.arr().firstOrNull()?.let { rings.add(ring(it)) }
+            }
+            if (rings.isEmpty()) continue
+            val issue = Time.parseIso(p["issue"].str())
+            val expire = Time.parseIso(p["expire"].str())
+            val begin = Time.parseIso(p["polygon_begin"].str()).takeIf { it > 0 } ?: issue
+            var end = Time.parseIso(p["polygon_end"].str())
+            if (end <= begin) end = expire          // (the archive has the odd polygon that ends before it begins)
+            val tags = ArrayList<String>()
+            p["tornadotag"].str().takeIf { it.isNotBlank() }?.let { tags.add(it) }
+            p["damagetag"].str().takeIf { it.isNotBlank() }?.let { tags.add("$it damage threat") }
+            p["hailtag"].str().takeIf { it.isNotBlank() }?.let { tags.add("hail $it in") }
+            p["windtag"].str().takeIf { it.isNotBlank() }?.let { tags.add("wind $it mph") }
+            val wfo = p["wfo"].str()
+            val etn = p["eventid"].str().ifEmpty { p["eventid"].num(0.0).toInt().toString() }
+            val key = "$wfo.$ph.$sig.$etn"
+            out.add(Alert(id = "$key@${p["polygon_begin"].str()}", event = ev, variant = variant,
+                style = STYLES.getValue(ev), rings = rings, sentMs = if (issue > 0) issue else begin,
+                expiresMs = if (expire > 0) expire else end, headline = "", description = "", instruction = "",
+                area = "", office = wfo, tags = tags, trackKey = key, action = p["status"].str(),
+                validFromMs = begin, validToMs = end))
+        }
+        out.sortBy { VARIANTS[it.variant]?.priority ?: 0f }
+        return out
+    }
+
+    /** The warnings in force at [t]: the archive's polygons of that time, plus live ones already in force then
+     *  that the archive (a few minutes behind) doesn't have yet. */
+    fun at(t: Long, live: List<Alert>, history: List<Alert>): List<Alert> {
+        val out = ArrayList<Alert>()
+        val seen = HashSet<String>()
+        for (a in history) if (a.validFromMs <= t && t < a.validToMs) { out.add(a); seen.add(eventKey(a.trackKey)) }
+        for (a in live) {
+            if (eventKey(a.trackKey) in seen) continue
+            if (a.validFromMs > t || (a.validToMs in 1 until t)) continue
+            out.add(a)
         }
         out.sortBy { VARIANTS[it.variant]?.priority ?: 0f }
         return out

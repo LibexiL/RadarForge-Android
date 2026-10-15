@@ -11,6 +11,7 @@ fun registerMore() {
     Extra.all.add("S3 listing parse" to ::s3Listing)
     Extra.all.add("latest volume search" to ::latestVolume)
     Extra.all.add("NWS alerts parse" to ::alerts)
+    Extra.all.add("warnings at a scan's time" to ::alertsAtTime)
     Extra.all.add("sites" to ::sites)
     Extra.all.add("basemap read + project" to ::basemap)
     Extra.all.add("loop: read just enough" to ::loopEnough)
@@ -104,6 +105,38 @@ private fun alerts() {
             "Flash Flood Emergency" to "flood", "Extreme Wind Warning" to "other", "Special Weather Statement" to "other"))
         ok(Alerts.group(ev) == g, "group of $ev is ${Alerts.group(ev)}, expected $g")
     ok(Alerts.URL.contains("event=Tornado%20Warning,") && !Alerts.URL.contains("Emergency") && Alerts.URL.contains("Severe%20Thunderstorm%20Watch"), "alerts url ${Alerts.URL}")
+}
+
+private fun alertsAtTime() {
+    fun piece(id: Int, b: String, e: String, poly: String, ph: String = "SV", extra: String = "") =
+        """{"properties":{"phenomena":"$ph","significance":"W","wfo":"OUN","eventid":$id,"issue":"2026-05-20T20:00:00Z",
+           "expire":"2026-05-20T21:00:00Z","polygon_begin":"$b","polygon_end":"$e","status":"CON"$extra},
+           "geometry":{"type":"Polygon","coordinates":[$poly]}}"""
+    val big = "[[-98,35],[-97,35],[-97,36],[-98,36],[-98,35]]"
+    val small = "[[-97.8,35.2],[-97.4,35.2],[-97.4,35.6],[-97.8,35.2]]"
+    val json = """{"features":[${piece(7, "2026-05-20T20:00:00Z", "2026-05-20T20:20:00Z", big)},
+        ${piece(7, "2026-05-20T20:20:00Z", "2026-05-20T21:00:00Z", small)},
+        ${piece(3, "2026-05-20T20:05:00Z", "2026-05-20T20:15:00Z", big, "TO", ",\"tornadotag\":\"OBSERVED\"")},
+        {"properties":{"phenomena":"FL","significance":"W"},"geometry":null}]}"""
+    val h = Alerts.parseIem(json)
+    ok(h.size == 3, "3 pieces, got ${h.size}")
+    ok(h.any { it.variant == "TORR" }, "observed tornado -> TORR")
+    fun t(s: String) = Time.parseIso(s)
+    val at10 = Alerts.at(t("2026-05-20T20:10:00Z"), emptyList(), h)
+    ok(at10.size == 2 && at10.any { it.rings[0].size == 10 }, "20:10: big polygon + tornado, got ${at10.map { it.id }}")
+    val at30 = Alerts.at(t("2026-05-20T20:30:00Z"), emptyList(), h)
+    ok(at30.size == 1 && at30[0].rings[0].size == 8, "20:30: the shrunk polygon only, got ${at30.map { it.id }}")
+    ok(Alerts.eventKey("KOUN.SV.W.0007") == Alerts.eventKey("OUN.SV.W.7"), "event keys match across sources")
+    ok(Alerts.eventKey("KWNS.TO.A.0200") == Alerts.eventKey("OUN.TO.A.200"), "watch keys ignore the office")
+    val live = Alert("x", "Severe Thunderstorm Warning", "SVR", Alerts.STYLES.getValue("Severe Thunderstorm Warning"),
+        listOf(floatArrayOf(-98f, 35f, -97f, 35f, -97f, 36f)), t("2026-05-20T20:00:00Z"), t("2026-05-20T21:00:00Z"),
+        "", "", "", "", "Norman OK", emptyList(), trackKey = "KOUN.SV.W.0007")
+    val later = Alert("y", "Tornado Warning", "TOR", Alerts.STYLES.getValue("Tornado Warning"),
+        listOf(floatArrayOf(-98f, 35f, -97f, 35f, -97f, 36f)), t("2026-05-20T20:40:00Z"), t("2026-05-20T21:10:00Z"),
+        "", "", "", "", "Norman OK", emptyList(), trackKey = "KOUN.TO.W.0009")
+    val mixed = Alerts.at(t("2026-05-20T20:30:00Z"), listOf(live, later), h)
+    ok(mixed.size == 1 && mixed[0].rings[0].size == 8, "no duplicate of a live warning, none issued later: ${mixed.map { it.id }}")
+    ok(Alerts.historyUrl(t("2026-05-20T20:00:00Z"), t("2026-05-20T21:00:00Z")).endsWith("sts=2026-05-20T20:00Z&ets=2026-05-20T21:00Z"), "history url")
 }
 
 private fun sites() {

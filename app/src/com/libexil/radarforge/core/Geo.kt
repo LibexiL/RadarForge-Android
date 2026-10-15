@@ -164,6 +164,7 @@ object Time {
     fun iso(ms: Long): String = fmt("yyyy-MM-dd HH:mm:ss'Z'").format(java.util.Date(ms))
     fun hmsZ(ms: Long): String = fmt("HH:mm:ss'Z'").format(java.util.Date(ms))
     fun hmZ(ms: Long): String = fmt("HH:mm'Z'").format(java.util.Date(ms))
+    fun isoMinute(ms: Long): String = fmt("yyyy-MM-dd'T'HH:mm'Z'").format(java.util.Date(ms))
     fun local(ms: Long, pattern: String = "h:mm a"): String =
         fmt(pattern, TimeZone.getDefault()).format(java.util.Date(ms))
 

@@ -645,7 +645,7 @@ object Sheets {
     /** Every warning type and threat level with its line; tap one to change it. */
     fun warningLines(a: MainActivity) {
         val col = W.vCol(a)
-        col.addView(W.note(a, "Every warning type and threat level has its own line. Tap one to change its colour, width and style. The defaults use the NWS colours; the NWS has no separate colours for threat levels, so those are told apart by the line style."))
+        col.addView(W.note(a, "Every warning type and threat level has its own line. Tap one to change its colour, width and style. The defaults are the classic colours: green flash flood, yellow severe thunderstorm, red tornado, magenta for a reported, PDS or emergency tornado; higher threat levels also get thicker or doubled lines."))
         for ((code, v) in Alerts.VARIANTS) {
             val row = W.hRow(a).apply {
                 setPadding(a.dpi(4f), a.dpi(6f), a.dpi(4f), a.dpi(6f))
@@ -662,17 +662,21 @@ object Sheets {
         }
         col.addView(W.section(a, "Presets"))
         val presets = W.hRow(a)
-        presets.addView(W.button(a, "NWS colours") {
+        presets.addView(W.button(a, "Classic (default)") {
             for (code in Alerts.VARIANTS.keys) a.prefs.setWarnLine(code, null)
             for (ev in Alerts.BASE_CODE.keys) a.prefs.setWarnColor(ev, null)
             a.rebuildAlerts(); a.rebuild(); warningLines(a)
         }, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = a.dpi(8f) })
-        presets.addView(W.button(a, "Classic colours") {
-            for (code in Alerts.VARIANTS.keys) a.prefs.setWarnLine(code, Alerts.CLASSIC_PRESET[code])
+        presets.addView(W.button(a, "NWS colours") {
+            for ((code, v) in Alerts.VARIANTS) a.prefs.setWarnLine(code, v.line)
             a.rebuildAlerts(); a.rebuild(); warningLines(a)
         }, LinearLayout.LayoutParams(0, -2, 1f))
         col.addView(presets, lp())
-        col.addView(W.note(a, "Classic colours: green flash flood, yellow severe thunderstorm, magenta reported / PDS / emergency tornado."))
+        col.addView(W.note(a, "NWS colours: the National Weather Service's own (dark red flash flood, orange severe thunderstorm); threat levels are told apart by the line style."))
+        col.addView(W.section(a, "New warnings"))
+        col.addView(W.switchRow(a, "Flash new warnings", "A warning that has just been issued, or upgraded, pulses on the map for a few seconds", a.prefs.warnFlashS > 0) {
+            a.prefs.warnFlashS = if (it) 8 else 0
+        })
         col.addView(W.section(a, "Going to a warning"))
         col.addView(W.switchRow(a, "Switch to the nearest radar", "When you open a warning's \"Show on map\"", a.prefs.goToNearestRadar) {
             a.prefs.goToNearestRadar = it
