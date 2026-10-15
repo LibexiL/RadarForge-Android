@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.6.0 – 2026-10-14
+
+* **Updates from inside the app.** RadarForge looks for a new version on GitHub about once a day and
+  offers it with its release notes. **Update now** downloads it and hands it to Android's installer.
+  Your settings, colour tables and favourites are kept.
+  * The first time, Android asks you to allow RadarForge to install apps.
+  * **Skip this version** stops the offer for that version.
+  * **Settings → Updates** has **Check for updates** and the daily check switch. About has a
+    **Check for updates** too.
+* **Friendlier menus:**
+  * Quick switches are in three groups: Warnings & storms, Radar display and Map.
+  * They have clearer names: Storm reports, Storm chasers, Severe outlook, Discussions, Colour bars,
+    Dealiasing and Σ Max trail.
+  * Map layers lists warnings and storm data first, then radar display (with Colour tables), and the
+    map last.
+  * Settings puts theme, colour tables and warning lines together under **Look & colours**.
+  * Settings adds **Learning & help** (learn mode, radar guide, What's new) and **Updates**.
+* **Getting started.** The first-launch guide is now six short steps with **Choose a radar** and
+  **Start** buttons. Reopen it any time from Settings → **Getting started**.
+
 ## 1.5.0 – 2026-10-14
 
 * **New default colour tables:** WxVortex for reflectivity, Enhanced for velocity (in mph) and Heatseaker

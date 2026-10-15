@@ -169,11 +169,16 @@ object Sheets {
         return row
     }
 
-    /** One-tap switches for everything on the map (the desktop app's Quick panel). */
+    /** One-tap switches for everything on the map (the desktop app's Quick panel), in three groups. */
     private fun quickSwitches(a: MainActivity, col: LinearLayout, sync: Sync) {
         val p = a.prefs
         col.addView(W.section(a, "Quick switches"))
-        val grid = ChipGrid(a)
+        var grid = ChipGrid(a)
+        fun group(title: String, first: Boolean = false) {
+            if (!first) col.addView(grid, lp(top = a.dpi(2f)))
+            col.addView(W.text(a, title, 13f, C.dim), lp(top = a.dpi(if (first) 0f else 8f)))
+            grid = ChipGrid(a)
+        }
         fun sw(label: String, key: String, isOn: () -> Boolean, set: (Boolean) -> Unit) {
             val chip = W.chip(a, label, isOn()) { c ->
                 set(!isOn())
@@ -184,27 +189,30 @@ object Sheets {
             grid.addView(chip)
         }
         fun layer(label: String, key: String) = sw(label, "layer:$key", { p.layer(key) }) { p.setLayer(key, it); a.layersChanged() }
+        group("Warnings & storms", first = true)
         layer("Warnings", "warnings")
         sw("Watches", "warn:watch", { p.warnGroup("watch") }) { p.setWarnGroup("watch", it); a.rebuildAlerts(); a.rebuild() }
-        layer("Reports", "reports")
-        layer("Chasers", "chasers")
-        layer("SPC outlook", "outlook")
-        layer("SPC MDs", "mcd")
+        layer("Storm reports", "reports")
+        layer("Storm chasers", "chasers")
+        layer("Severe outlook", "outlook")
+        layer("Discussions", "mcd")
+        group("Radar display")
+        sw("Colour bars", "legend", { p.showLegend }) { p.showLegend = it; a.settingsChanged() }
+        sw("Smoothing", "smooth", { p.smooth }) { p.smooth = it; a.displayChanged() }
+        sw("Dealiasing", "dealias", { p.dealias }) { p.dealias = it; a.displayChanged() }
+        sw("Σ Max trail", "trail", { p.trail }) { p.trail = it; a.requestLoopFrames(); a.displayChanged() }
+        sw("Learn mode", "learn", { p.learn }) { on ->
+            p.learn = on; a.displayChanged()
+            if (on) a.toast("Press and hold the map to see what the colours mean")
+        }
+        group("Map")
         layer("Counties", "counties")
         layer("Highways", "roads")
         layer("Cities", "cities")
         layer("Range rings", "rings")
         layer("Radar sites", "sites")
-        sw("Colour bar", "legend", { p.showLegend }) { p.showLegend = it; a.settingsChanged() }
-        sw("Smoothing", "smooth", { p.smooth }) { p.smooth = it; a.displayChanged() }
-        sw("Dealias", "dealias", { p.dealias }) { p.dealias = it; a.displayChanged() }
-        sw("Σ Trail", "trail", { p.trail }) { p.trail = it; a.requestLoopFrames(); a.displayChanged() }
-        sw("Learn mode", "learn", { p.learn }) { on ->
-            p.learn = on; a.displayChanged()
-            if (on) a.toast("Press and hold the map to see what the colours mean")
-        }
         col.addView(grid, lp(top = a.dpi(2f)))
-        col.addView(W.note(a, "Dealias unfolds aliased velocity (BV, SRV). Σ Trail shows the strongest value at each spot over the loaded scans – hail swaths and rotation tracks. Learn mode explains the values when you press and hold."), lp(top = a.dpi(6f)))
+        col.addView(W.note(a, "Discussions are the SPC's mesoscale discussions. Dealiasing unfolds aliased velocity (BV, SRV). Σ Max trail shows the strongest value at each spot over the loaded scans – hail swaths and rotation tracks. Learn mode explains the values when you press and hold."), lp(top = a.dpi(6f)))
     }
 
     fun layers(a: MainActivity) {
@@ -212,21 +220,15 @@ object Sheets {
         val col = W.vCol(a)
         val sync = Sync()
         quickSwitches(a, col, sync)
-        col.addView(W.section(a, "Map"))
         fun layer(key: String, label: String, desc: String?) =
             col.addView(syncedSwitch(a, sync, "layer:$key", label, desc, { p.layer(key) }) { on -> p.setLayer(key, on); a.layersChanged() })
-        layer("counties", "Counties", null)
-        layer("roads", "Highways", null)
-        layer("cities", "Cities", null)
-        layer("rings", "Range rings", "Every 50 ${p.distUnits} around the radar")
-        layer("sites", "Radar sites", "Tap one on the map to switch to it")
         col.addView(W.section(a, "Warnings"))
-        layer("warnings", "NWS warnings", "Outlines from the National Weather Service, updated every 90 seconds")
+        layer("warnings", "NWS warnings", "Outlines from the National Weather Service, updated every 90 seconds. Earlier scans in the loop show the warnings of their own time.")
         for ((key, label) in listOf("tornado" to "Tornado", "severe" to "Severe thunderstorm", "flood" to "Flash flood",
             "watch" to "Watches", "other" to "Other (extreme wind, marine, snow squall, dust storm, special statements)")) {
             col.addView(syncedSwitch(a, sync, "warn:$key", label, null, { p.warnGroup(key) }) { on -> p.setWarnGroup(key, on); a.rebuildAlerts(); a.rebuild() })
         }
-        col.addView(W.listRow(a, "Warning lines", "Colour, width and style for each warning and threat level", "›") { warningLines(a) }, lp())
+        col.addView(W.listRow(a, "Warning lines", "Colours (classic or NWS), width, style and the flash for new warnings", "›") { warningLines(a) }, lp())
 
         col.addView(W.section(a, "Storm reports"))
         layer("reports", "Storm reports", "NWS local storm reports, plus Spotter Network reports: tornado, hail, wind, flooding. Tap one to read it.")
@@ -258,12 +260,14 @@ object Sheets {
         col.addView(W.switchRow(a, "Show names", "When zoomed in", p.chaserNames) { p.chaserNames = it; a.rebuildFeeds() })
 
         col.addView(W.section(a, "Storm Prediction Center"))
-        layer("outlook", "Convective outlook", "Risk areas: TSTM, MRGL, SLGT, ENH, MDT, HIGH. Tap inside one for the chances there.")
+        layer("outlook", "Severe weather outlook", "Risk areas: TSTM, MRGL, SLGT, ENH, MDT, HIGH. Tap inside one for the chances there.")
         col.addView(W.segmented(a, listOf("1" to "Today (day 1)", "2" to "Day 2", "3" to "Day 3"), "${p.outlookDay}") {
             p.outlookDay = it.toInt(); a.applyFeedPrefs(); a.rebuildSpc(); a.rebuild()
         })
         layer("mcd", "Mesoscale discussions", "Blue outlines – tap one to read it")
-        col.addView(W.section(a, "Radar"))
+
+        col.addView(W.section(a, "Radar display"))
+        col.addView(syncedSwitch(a, sync, "legend", "Colour bars", "The colour scale along the edge of each panel", { p.showLegend }) { on -> p.showLegend = on; a.settingsChanged() })
         col.addView(syncedSwitch(a, sync, "smooth", "Smooth radar", "Blend neighbouring gates instead of showing them as blocks", { p.smooth }) { on ->
             p.smooth = on; a.displayChanged()
         })
@@ -273,7 +277,14 @@ object Sheets {
         col.addView(syncedSwitch(a, sync, "trail", "Σ Max-value trail", "Each panel shows the strongest value seen at every spot over the loaded scans (CC: the lowest)", { p.trail }) { on ->
             p.trail = on; a.requestLoopFrames(); a.displayChanged()
         })
-        col.addView(syncedSwitch(a, sync, "legend", "Colour legend", null, { p.showLegend }) { on -> p.showLegend = on; a.settingsChanged() })
+        col.addView(W.listRow(a, "Colour tables", "WxVortex, Enhanced and Heatseaker by default, or import your own .pal files", "›") { colorTables(a) }, lp())
+
+        col.addView(W.section(a, "Map"))
+        layer("counties", "Counties", null)
+        layer("roads", "Highways", null)
+        layer("cities", "Cities", null)
+        layer("rings", "Range rings", "Every 50 ${p.distUnits} around the radar")
+        layer("sites", "Radar sites", "Tap one on the map to switch to it")
         a.sheets.show("Map layers", col, fullHeight = true)
     }
 
@@ -376,22 +387,20 @@ object Sheets {
     fun settings(a: MainActivity) {
         val p = a.prefs
         val col = W.vCol(a)
-        col.addView(W.section(a, "Look"))
+        col.addView(W.listRow(a, "Getting started", "A quick tour of RadarForge", "›") { welcome(a) }, lp())
+
+        col.addView(W.section(a, "Look & colours"))
         val accentName = Themes.ACCENTS.firstOrNull { it.first == p.accent }?.second ?: "Custom"
         col.addView(W.listRow(a, "Theme", "${C.themeName}${if (p.accent != 0) " · $accentName accent" else ""}" +
             if (p.followSystemTheme) " · follows the phone's dark mode" else "", "›") { themes(a) }, lp())
+        col.addView(W.listRow(a, "Colour tables", "WxVortex, Enhanced and Heatseaker by default, or import your own .pal files", "›") { colorTables(a) }, lp())
+        col.addView(W.listRow(a, "Warning lines", "Colours (classic or NWS), width, style and the flash for new warnings", "›") { warningLines(a) }, lp())
+
         col.addView(W.section(a, "Units"))
         col.addView(W.text(a, "Velocity", 14f, C.dim), lp())
         col.addView(W.segmented(a, listOf("kts" to "Knots", "mph" to "mph", "m/s" to "m/s"), p.velUnits) { p.velUnits = it; a.settingsChanged() })
         col.addView(W.text(a, "Distance", 14f, C.dim), lp(top = a.dpi(6f)))
         col.addView(W.segmented(a, listOf("mi" to "Miles", "km" to "Kilometres", "nm" to "Nautical mi"), p.distUnits) { p.distUnits = it; a.settingsChanged() })
-
-        col.addView(W.section(a, "Storm-relative velocity"))
-        col.addView(W.note(a, "SRV removes the storm's own motion so rotation stands out. Set the direction the storms are moving from, and their speed."))
-        col.addView(W.slider(a, "Moving from", 0, 71, (p.stormDir / 5).toInt(), { "${it * 5}° (${Geo.compass(it * 5.0)})" }) {
-            p.stormDir = it * 5f; a.settingsChanged()
-        })
-        col.addView(W.slider(a, "Speed", 0, 80, p.stormKts.toInt(), { "$it kts" }) { p.stormKts = it.toFloat(); a.settingsChanged() })
 
         col.addView(W.section(a, "Loop"))
         col.addView(W.note(a, "The previous scans load as soon as you pick a radar, so the loop (and the Σ trail) is ready when you want it. Only the tilt on screen is downloaded."))
@@ -405,9 +414,12 @@ object Sheets {
             p.loopSpeedMs = (11 - it) * 120
         })
 
-        col.addView(W.section(a, "Colours"))
-        col.addView(W.listRow(a, "Colour tables", "Built-in GR-style tables, or import your own .pal files", "›") { colorTables(a) }, lp())
-        col.addView(W.listRow(a, "Warning lines", "Colour, width and style for each warning and threat level", "›") { warningLines(a) }, lp())
+        col.addView(W.section(a, "Storm-relative velocity"))
+        col.addView(W.note(a, "SRV removes the storm's own motion so rotation stands out. Set the direction the storms are moving from, and their speed."))
+        col.addView(W.slider(a, "Moving from", 0, 71, (p.stormDir / 5).toInt(), { "${it * 5}° (${Geo.compass(it * 5.0)})" }) {
+            p.stormDir = it * 5f; a.settingsChanged()
+        })
+        col.addView(W.slider(a, "Speed", 0, 80, p.stormKts.toInt(), { "$it kts" }) { p.stormKts = it.toFloat(); a.settingsChanged() })
 
         col.addView(W.section(a, "My location"))
         col.addView(W.switchRow(a, "Show my location", "Keeps the blue dot up to date while RadarForge is open", p.liveLocation) {
@@ -422,11 +434,14 @@ object Sheets {
             p.warnAtLocation = it
         })
 
-        col.addView(W.section(a, "Learning"))
+        col.addView(W.section(a, "Learning & help"))
         col.addView(W.switchRow(a, "Learn mode", "Press and hold the map: plain-language notes explain the values there", p.learn) {
             p.learn = it; a.displayChanged()
         })
         col.addView(W.listRow(a, "Radar guide", "What each product shows, and the storm signatures to look for", "›") { radarGuide(a) }, lp())
+        col.addView(W.listRow(a, "What's new", "The changes in RadarForge ${MainActivity.WHATS_NEW}", "›") { whatsNew(a) }, lp())
+
+        updatesSection(a, col)
 
         col.addView(W.section(a, "General"))
         col.addView(W.switchRow(a, "Keep the screen on", "While RadarForge is open", p.keepScreenOn) { p.keepScreenOn = it; a.settingsChanged() })
@@ -441,6 +456,18 @@ object Sheets {
         }, lp())
         col.addView(W.listRow(a, "About RadarForge", "Version, data sources, diagnostics", "›") { about(a) }, lp())
         a.sheets.show("Settings", col, fullHeight = true)
+    }
+
+    private fun updatesSection(a: MainActivity, col: LinearLayout) {
+        val p = a.prefs
+        col.addView(W.section(a, "Updates"))
+        val last = p.lastUpdateCheck
+        col.addView(W.listRow(a, "Check for updates", "You have ${(a.application as App).versionName()}" +
+            if (last > 0) " · last checked ${Time.age(last)}" else "", null) { Updater.check(a, manual = true) }, lp())
+        col.addView(W.switchRow(a, "Check automatically", "About once a day, from RadarForge's GitHub releases. New versions are offered; nothing installs without asking you.", p.autoUpdateCheck) {
+            p.autoUpdateCheck = it
+            if (it) p.skippedVersion = ""
+        })
     }
 
     // ------------------------------------------------------------------ themes
@@ -988,9 +1015,10 @@ object Sheets {
         col.addView(W.note(a, "A NEXRAD weather radar viewer for Android, in the spirit of the RadarForge desktop app."))
         col.addView(W.section(a, "Data"))
         col.addView(W.note(a, "Radar: NOAA NEXRAD Level II on AWS (Unidata real-time chunks and archive).\nWarnings: National Weather Service API.\nStorm reports, SPC outlooks and discussions: NWS and Storm Prediction Center via the Iowa Environmental Mesonet.\nStorm chasers and spotter reports: Spotter Network (non-commercial use).\nMap: US Census Bureau, Natural Earth, GeoNames.\n\nNot an official warning source – always follow the NWS and local officials."))
-        col.addView(W.listRow(a, "Project page", "github.com/LibexiL", "›") {
-            try { a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/LibexiL"))) } catch (_: Exception) {}
+        col.addView(W.listRow(a, "Project page", "github.com/LibexiL/RadarForge-Android", "›") {
+            try { a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/LibexiL/RadarForge-Android"))) } catch (_: Exception) {}
         }, lp())
+        col.addView(W.listRow(a, "Check for updates", "Looks for a newer version on GitHub", null) { Updater.check(a, manual = true) }, lp())
         col.addView(W.listRow(a, "Diagnostics", "Graphics info and recent log – useful for bug reports", "›") { diagnostics(a) }, lp())
         a.sheets.show("About", col)
     }
@@ -1037,23 +1065,26 @@ object Sheets {
         a.sheets.show(title, col, fullHeight = true)
     }
 
-    fun whatsNew(a: MainActivity) {
-        a.prefs.seenWhatsNew = MainActivity.WHATS_NEW
-        val col = W.vCol(a)
-        val items = listOf(
-            "The 10 previous scans load as soon as you pick a radar, so the loop is ready straight away. ◀ ▶ in the loop bar step one scan at a time. (Settings → Loop: how many, and whether to load them on mobile data.)",
-            "Themes – the six from RadarForge for PC, an accent colour, and following the phone's dark mode (Settings → Theme, or press and hold the settings button).",
-            "Quick switches at the top of Map layers: every layer and radar option one tap away.",
-            "Σ max-value trail and velocity dealiasing, as on the desktop app.",
-            "Learn mode and a radar guide: press and hold the map for plain-language notes about the values there.",
-            "SPC day 2 and day 3 outlooks, a coloured dot showing how fresh the data is, and two-finger tap to zoom out.",
-        )
+    private fun checkList(a: MainActivity, col: LinearLayout, items: List<String>) {
         for (t in items) {
             val row = W.hRow(a).apply { setPadding(0, a.dpi(6f), 0, a.dpi(6f)) }
             row.addView(IconView(a, Icon.CHECK, C.accent), LinearLayout.LayoutParams(a.dpi(26f), a.dpi(26f)))
             row.addView(W.text(a, t, 14.5f, C.text).apply { setLineSpacing(0f, 1.15f) }, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = a.dpi(8f) })
             col.addView(row, lp())
         }
+    }
+
+    fun whatsNew(a: MainActivity) {
+        a.prefs.seenWhatsNew = MainActivity.WHATS_NEW
+        val col = W.vCol(a)
+        checkList(a, col, listOf(
+            "Updates from inside the app: RadarForge looks for a new version about once a day and offers it – one tap downloads and installs it (Settings → Updates).",
+            "New default colour tables: WxVortex reflectivity, Enhanced velocity and Heatseaker correlation coefficient. Tables you imported are kept.",
+            "Classic warning colours: red tornado, magenta confirmed or PDS tornado, yellow severe thunderstorm, green flash flood. Warning lines → NWS colours switches back.",
+            "Going back through the loop shows the warnings that were in force at each scan, with their polygons as they were then.",
+            "New warnings flash on the map for a few seconds when they're issued or upgraded.",
+            "Tidier menus: quick switches in groups, warnings and storm data at the top of Map layers, and Getting started in Settings.",
+        ))
         col.addView(W.section(a, "Your location"))
         col.addView(W.switchRow(a, "Keep my location up to date", "While the app is open. Needed to be alerted when a new warning covers where you are (Settings → My location).", a.prefs.liveLocation) {
             a.prefs.liveLocation = it
@@ -1064,26 +1095,30 @@ object Sheets {
         a.sheets.show("New in RadarForge ${MainActivity.WHATS_NEW}", col)
     }
 
+    /** Getting started: shown on the first launch, and from Settings. */
     fun welcome(a: MainActivity) {
         a.prefs.seenWelcome = true
         a.prefs.seenWhatsNew = MainActivity.WHATS_NEW
         val col = W.vCol(a)
-        col.addView(W.note(a, "Live NEXRAD radar, tilt by tilt as the radar scans."))
-        val tips = listOf(
-            "Tap the radar name at the top to pick another radar (or tap a green square on the map).",
-            "Drag to move, pinch to zoom, double-tap to zoom in.",
-            "Press and hold the map to read the value under your finger.",
-            "Pick products along the bottom; the arrows change the tilt.",
-            "The panel button shows 2 or 4 linked panels – tap a panel to choose its product.",
-            "Play loops the previous scans (they load as soon as you pick a radar); ◀ ▶ step through them.",
-            "The ruler measures distances, or tracks a storm and shows when it reaches the towns ahead.",
-            "Map layers has quick switches for everything: warnings, storm reports, chasers, SPC, smoothing, dealiasing, the Σ trail and learn mode.",
-            "Settings → Theme changes the colours of the app and the map.",
+        col.addView(W.note(a, "Live NEXRAD radar, tilt by tilt as the radar scans. Six things to know, then you're set."))
+        val steps = listOf(
+            "Pick a radar" to "Tap the radar name at the top, or a green square on the map. Live data starts straight away and keeps itself up to date.",
+            "Move around" to "Drag to move, pinch to zoom, double-tap to zoom in, two-finger tap to zoom out. Press and hold to read the value under your finger.",
+            "Products and panels" to "Pick a product along the bottom (reflectivity, velocity, correlation coefficient…); the arrows change the tilt. The panel button shows 2 or 4 linked panels.",
+            "Warnings" to "Coloured outlines are NWS warnings: red tornado, magenta confirmed or PDS tornado, yellow severe thunderstorm, green flash flood. New ones flash for a few seconds. Tap one to read it.",
+            "The loop" to "Play loops the previous scans (they load as soon as you pick a radar); ◀ ▶ step through them. Each scan shows the warnings of its own time.",
+            "Everything else" to "Map layers has one-tap switches for warnings, storm reports, chasers, SPC outlooks and the map. The ruler measures distances and tracks storms. Settings has themes, colour tables, updates and this guide.",
         )
-        for (t in tips) {
+        for ((i, step) in steps.withIndex()) {
             val row = W.hRow(a).apply { setPadding(0, a.dpi(6f), 0, a.dpi(6f)) }
-            row.addView(IconView(a, Icon.CHECK, C.accent), LinearLayout.LayoutParams(a.dpi(26f), a.dpi(26f)))
-            row.addView(W.text(a, t, 14.5f, C.text).apply { setLineSpacing(0f, 1.15f) }, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = a.dpi(8f) })
+            row.addView(W.text(a, "${i + 1}", 15f, C.accentText, true).apply {
+                gravity = Gravity.CENTER
+                background = rounded(C.accent, a.dp(13f))
+            }, LinearLayout.LayoutParams(a.dpi(26f), a.dpi(26f)))
+            val text = W.vCol(a)
+            text.addView(W.text(a, step.first, 15f, C.text, true))
+            text.addView(W.text(a, step.second, 14f, C.dim).apply { setLineSpacing(0f, 1.15f) }, lp(top = a.dpi(2f)))
+            row.addView(text, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = a.dpi(10f) })
             col.addView(row, lp())
         }
         col.addView(W.switchRow(a, "Keep my location up to date", "While the app is open, so the map can show where you are and alert you when a new warning covers it.", a.prefs.liveLocation) {
@@ -1091,7 +1126,12 @@ object Sheets {
             if (it && !a.hasLocationPermission()) a.requestLocationPermission()
             a.stopLiveLocation(); a.startLiveLocation()
         })
-        col.addView(W.button(a, "Got it", primary = true) { a.sheets.close() }, lp(top = a.dpi(14f)))
-        a.sheets.show("Welcome to RadarForge", col)
+        val buttons = W.hRow(a)
+        buttons.addView(W.button(a, "Choose a radar") { sites(a) },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = a.dpi(8f) })
+        buttons.addView(W.button(a, "Start", primary = true) { a.sheets.close() }, LinearLayout.LayoutParams(0, -2, 1f))
+        col.addView(buttons, lp(top = a.dpi(14f)))
+        col.addView(W.note(a, "Settings → Getting started brings this back."), lp(top = a.dpi(8f)))
+        a.sheets.show("Welcome to RadarForge", col, fullHeight = true)
     }
 }

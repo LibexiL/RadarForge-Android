@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: write        # lets a version tag publish its GitHub release (which the in-app updater reads)
+
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -27,3 +30,20 @@ jobs:
         with:
           name: RadarForge-Android-apk
           path: build/RadarForge-Android-*.apk
+
+      # A tag like v1.6.0 publishes a release with the APK attached, and this version's CHANGELOG
+      # entry as its notes. Installed copies of RadarForge find it and offer the update.
+      - name: Release notes from the changelog
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          awk -v v="$ver" '$0 ~ "^## "v"( |$)" {on=1; next} on && /^## / {exit} on {print}' CHANGELOG.md > build/notes.md
+          [ -s build/notes.md ] || echo "RadarForge for Android $ver" > build/notes.md
+          cat build/notes.md
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: RadarForge for Android ${{ github.ref_name }}
+          body_path: build/notes.md
+          files: build/RadarForge-Android-*.apk

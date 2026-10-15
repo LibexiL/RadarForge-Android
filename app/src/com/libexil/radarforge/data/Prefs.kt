@@ -168,6 +168,19 @@ class Prefs(ctx: Context) {
         get() = s("seen_whats_new", "")
         set(v) = put { putString("seen_whats_new", v) }
 
+    // ---- updates
+    /** Look for a new version on GitHub about once a day. */
+    var autoUpdateCheck: Boolean
+        get() = p.getBoolean("auto_update_check", true)
+        set(v) = put { putBoolean("auto_update_check", v) }
+    var lastUpdateCheck: Long
+        get() = p.getLong("last_update_check", 0L)
+        set(v) = put { putLong("last_update_check", v) }
+    /** A version the user chose to skip: not offered again automatically. */
+    var skippedVersion: String
+        get() = s("skipped_version", "")
+        set(v) = put { putString("skipped_version", v) }
+
     // ---- storm reports
     /** How far back storm reports go: 1, 3, 6, 12 or 24 hours. */
     var reportHours: Int

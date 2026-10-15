@@ -279,6 +279,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         main.postDelayed(statusTick, 30_000)
         // e.g. back on Wi-Fi: the previous scans may load now
         if (site != null) requestLoopFrames()
+        Updater.onResume(this)
     }
 
     override fun onPause() {
@@ -1952,7 +1953,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         const val REQ_LOCATION_LIVE = 13
         const val REQ_IMPORT_PAL = 21
         /** Bump to show the "what's new" sheet once after an update. */
-        const val WHATS_NEW = "1.4.0"
+        const val WHATS_NEW = "1.6.0"
         private val TRAIL_RE = Regex("trail(\\d+)")
     }
 }

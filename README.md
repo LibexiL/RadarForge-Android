@@ -27,7 +27,10 @@ You need an Android phone or tablet with **Android 8.0 or newer** (almost any ph
 4. Open **RadarForge** from your app drawer. On first start it asks for your location so it can pick
    the nearest radar (you can say no and choose one yourself).
 
-**Updating:** download the newer `.apk` and install it over the old one. Your settings are kept.
+**Updating:** from 1.6.0 on, RadarForge looks for a new version about once a day and offers it:
+tap **Update now** and confirm the install (the first time, Android asks you to allow RadarForge to
+install apps). **Settings → Updates → Check for updates** looks straight away. You can also download
+the newer `.apk` and install it over the old one. Your settings are kept either way.
 **Uninstalling:** long-press the RadarForge icon → **Uninstall**.
 
 ---
@@ -140,6 +143,11 @@ KEY_PASS=...
 
 GitHub builds the APK and runs the tests on every push (Actions tab → latest run → *Artifacts*).
 
+**Releasing:** push a version tag (`git tag v1.6.0 && git push origin v1.6.0`). The build then publishes a
+GitHub release with the APK attached and that version's CHANGELOG entry as its notes; the in-app
+updater reads the newest release (`/releases/latest`), so installed copies are offered it. The tag must
+match `android:versionName` in the manifest.
+
 ---
 
 ## Project layout
@@ -152,6 +160,7 @@ RadarForge-Android/
 │   │   ├── MainActivity.kt   main screen, panels, loop, location, colour table import
 │   │   ├── Sheets.kt         radar picker, layers, settings, warnings, reports, chasers, SPC, about
 │   │   ├── ShotProvider.kt   hands the shared map picture to other apps
+│   │   ├── Updater.kt        in-app updates: GitHub release check, download, package installer
 │   │   ├── core/             radar decoding & products – plain Kotlin, tested on the JVM
 │   │   │   ├── Bzip2.kt          bzip2 decoder
 │   │   │   ├── Level2.kt         NEXRAD Level II (message 31 / 1, archive files, live chunks)
@@ -166,6 +175,7 @@ RadarForge-Android/
 │   │   │   ├── Learn.kt          learn-mode notes and the radar guide
 │   │   │   ├── LoopSupport.kt    previous scans: partial reads, trimming, picking the frames
 │   │   │   ├── Measure.kt        distance and storm-track maths
+│   │   │   ├── Releases.kt       the newest GitHub release, version comparison (the updater)
 │   │   │   ├── S3.kt, Net.kt     AWS bucket listings and downloads
 │   │   │   └── Basemap.kt, Geo.kt, RenderData.kt, ...
 │   │   ├── gl/               OpenGL ES 3.0 renderer

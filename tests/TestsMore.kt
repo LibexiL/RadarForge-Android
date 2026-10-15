@@ -18,6 +18,7 @@ fun registerMore() {
     registerFeeds()
     registerLoop()
     registerData()
+    registerReleases()
 }
 
 private fun s3Listing() {
@@ -191,4 +192,30 @@ private fun loopEnough() {
         ok(copy.size() < bytes.size * (if (tilt < 1f) 0.4 else 0.97), "tilt $tilt read ${copy.size()} of ${bytes.size}")
         println(String.format("       tilt %.1f %s: read %.1f of %.1f MB", tilt, moments, copy.size() / 1e6, bytes.size / 1e6))
     }
+}
+
+internal fun registerReleases() {
+    Extra.all.add("updater: versions + GitHub release" to ::releases)
+}
+
+private fun releases() {
+    ok(Releases.compare("1.10.0", "1.9.2") > 0, "1.10 > 1.9.2")
+    ok(Releases.compare("v1.6", "1.6.0") == 0, "1.6 == 1.6.0")
+    ok(Releases.compare("1.5.0", "1.6.0") < 0, "1.5 < 1.6")
+    ok(Releases.compare("1.6.0-beta", "1.6.0") == 0, "suffix ignored")
+    ok(Releases.isNewer("1.6.1", "1.6.0") && !Releases.isNewer("1.6.0", "1.6.0") && !Releases.isNewer("1.6.0", "?"), "isNewer")
+    ok(Releases.versionOf("RadarForge-Android-1.6.0") == "1.6.0", "version from a long tag")
+    val js = """{"tag_name":"v1.6.0","name":"RadarForge for Android 1.6.0","draft":false,"prerelease":false,
+      "html_url":"https://github.com/LibexiL/RadarForge-Android/releases/tag/v1.6.0","published_at":"2026-10-14T18:00:00Z",
+      "body":"## What's new\r\n* **Updates** in the app\r\n- See [the page](https://x.y) and `Settings`\r\n\r\n\r\n\r\nEnd",
+      "assets":[{"name":"source.zip","size":5,"browser_download_url":"https://x/source.zip"},
+                {"name":"RadarForge-Android-1.6.0.apk","size":9876543,"browser_download_url":"https://github.com/LibexiL/RadarForge-Android/releases/download/v1.6.0/RadarForge-Android-1.6.0.apk"}]}"""
+    val r = Releases.parse(js) ?: throw AssertionError("release not parsed")
+    ok(r.version == "1.6.0" && r.tag == "v1.6.0", "version ${r.version}")
+    ok(r.apkUrl.endsWith("/RadarForge-Android-1.6.0.apk") && r.apkSize == 9876543L, "apk ${r.apkUrl} ${r.apkSize}")
+    ok(r.publishedMs == Time.parseIso("2026-10-14T18:00:00Z") && r.publishedMs > 0, "published")
+    ok(r.notes == "What's new\n• Updates in the app\n• See the page and Settings\n\nEnd", "notes: <${r.notes}>")
+    ok(Releases.parse(js.replace("\"prerelease\":false", "\"prerelease\":true")) == null, "pre-releases are not offered")
+    ok(Releases.parse("""{"tag_name":"v1.7.0","assets":[]}""")?.apkUrl == "", "release without an APK")
+    ok(Releases.parse("not json") == null, "bad json")
 }
