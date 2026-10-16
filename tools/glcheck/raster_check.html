@@ -1,0 +1,42 @@
+<!doctype html><html><body style="margin:0;background:#222"><canvas id="c" width="600" height="400"></canvas>
+<script>
+window.result = null;
+(async () => {
+  const gl = document.getElementById("c").getContext("webgl2");
+  const t = async p => (await fetch(p)).text();
+  function sh(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+  try {
+    const p = gl.createProgram();
+    gl.attachShader(p, sh(gl.VERTEX_SHADER, await t("/app/assets/shaders/raster.vert")));
+    gl.attachShader(p, sh(gl.FRAGMENT_SHADER, await t("/app/assets/shaders/raster.frag")));
+    gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    gl.useProgram(p);
+    // 64x32 texture: top half red (north), bottom half blue, right column transparent; premultiplied
+    const w = 64, h = 32, px = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const o = (y * w + x) * 4, a = x > 48 ? 0 : 255;
+      const c = y < h / 2 ? [255, 0, 0] : [0, 0, 255];
+      px[o] = c[0] * a / 255; px[o + 1] = c[1] * a / 255; px[o + 2] = c[2] * a / 255; px[o + 3] = a;
+    }
+    const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0, 1,0, 1,1, 0,0, 1,1, 0,1]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
+    const u = n => gl.getUniformLocation(p, n);
+    gl.uniform4f(u("u_rect"), -200, -100, 200, 100); gl.uniform2f(u("u_center"), 0, 0); gl.uniform1f(u("u_scale"), 1.2);
+    gl.uniform2f(u("u_vp"), 600, 400); gl.uniform1i(u("u_tex"), 0); gl.uniform1f(u("u_alpha"), 0.85);
+    gl.clearColor(0.13, 0.13, 0.13, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    const r = new Uint8Array(4), q = new Uint8Array(4), z = new Uint8Array(4);
+    gl.readPixels(200, 300, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, r);   // GL y up: upper half of the canvas
+    gl.readPixels(200, 100, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, q);
+    gl.readPixels(530, 300, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, z);   // transparent column
+    window.result = {top: Array.from(r), bottom: Array.from(q), clear: Array.from(z)};
+  } catch (e) { window.result = {error: String(e)}; }
+})();
+</script></body></html>

@@ -24,6 +24,8 @@ class ColorTable(val name: String) {
     var step: Float? = null
     var rf = intArrayOf(119, 0, 125, 255)
     val entries = ArrayList<Entry>()
+    /** Names for sections of a categorical table ("Label: 128 Snow"), shown on the legend instead of numbers. */
+    val labels = ArrayList<Pair<Float, String>>()
     var source = ""          // asset or file path
 
     val vmin: Float get() = entries.firstOrNull()?.value ?: 0f
@@ -110,6 +112,7 @@ class ColorTable(val name: String) {
                 val rest = line.substringAfter(':').trim()
                 val nums = NUM.findAll(rest).map { it.value.toFloat() }.toList()
                 when (key) {
+                    "label" -> if (nums.isNotEmpty()) ct.labels.add(nums[0] to rest.substringAfter(' ', "").trim())
                     "product" -> ct.product = rest
                     "units" -> ct.units = rest
                     "scale" -> if (nums.isNotEmpty()) ct.scale = nums[0]

@@ -37,6 +37,8 @@ class Alert(
     }
 
     val isWatch: Boolean get() = event.endsWith("Watch")
+    /** Winter, cold and tropical alerts cover whole counties / zones: shaded rather than outlined. */
+    val isArea: Boolean get() = event in Alerts.AREA_EVENTS
     val variantLabel: String get() = Alerts.VARIANTS[variant]?.label ?: event
 
     /** Point-in-polygon (any ring). */
@@ -81,7 +83,34 @@ object Alerts {
         "Special Weather Statement" to rgb(0xff, 0xe4, 0xb5),
         "Tornado Watch" to rgb(0xff, 0xff, 0x00),
         "Severe Thunderstorm Watch" to rgb(0xdb, 0x70, 0x93),
+        // (1.7) winter, cold and tropical: whole counties / zones, shaded
+        "Hurricane Warning" to rgb(0xdc, 0x14, 0x3c),
+        "Storm Surge Warning" to rgb(0xb5, 0x24, 0xf7),
+        "Tropical Storm Warning" to rgb(0xb2, 0x22, 0x22),
+        "Hurricane Watch" to rgb(0xff, 0x00, 0xff),
+        "Storm Surge Watch" to rgb(0xdb, 0x7f, 0xf7),
+        "Tropical Storm Watch" to rgb(0xf0, 0x80, 0x80),
+        "Blizzard Warning" to rgb(0xff, 0x45, 0x00),
+        "Ice Storm Warning" to rgb(0x8b, 0x00, 0x8b),
+        "Winter Storm Warning" to rgb(0xff, 0x69, 0xb4),
+        "Lake Effect Snow Warning" to rgb(0x00, 0x8b, 0x8b),
+        "Extreme Cold Warning" to rgb(0x00, 0x00, 0xff),
+        "Winter Storm Watch" to rgb(0x46, 0x82, 0xb4),
+        "Freezing Rain Advisory" to rgb(0xda, 0x70, 0xd6),
+        "Winter Weather Advisory" to rgb(0x7b, 0x68, 0xee),
+        "Extreme Cold Watch" to rgb(0x5f, 0x9e, 0xa0),
+        "Cold Weather Advisory" to rgb(0xaf, 0xee, 0xee),
+        "Freeze Warning" to rgb(0x48, 0x3d, 0x8b),
+        "Frost Advisory" to rgb(0x64, 0x95, 0xed),
     )
+
+    val WINTER_EVENTS = listOf("Blizzard Warning", "Ice Storm Warning", "Winter Storm Warning", "Lake Effect Snow Warning",
+        "Winter Storm Watch", "Freezing Rain Advisory", "Winter Weather Advisory", "Extreme Cold Warning", "Extreme Cold Watch",
+        "Cold Weather Advisory", "Freeze Warning", "Frost Advisory")
+    val TROPICAL_EVENTS = listOf("Hurricane Warning", "Storm Surge Warning", "Tropical Storm Warning", "Hurricane Watch",
+        "Storm Surge Watch", "Tropical Storm Watch")
+    /** Issued for whole counties / zones and shaded rather than outlined. */
+    val AREA_EVENTS: Set<String> = (WINTER_EVENTS + TROPICAL_EVENTS).toSet()
 
     /** How one warning line is drawn: colour (0xAARRGGBB), width (dp) and kind. */
     class Line(val color: Int, val width: Float, val kind: String) {
@@ -116,12 +145,35 @@ object Alerts {
         Variant("SPS", "Special Weather Statement", "Special Weather Statement", Line(rgb(0xff, 0xe4, 0xb5), 1.5f, "solid"), 2f),
         Variant("TOA", "Tornado Watch", "Tornado Watch", Line(rgb(0xff, 0xff, 0), 1.5f, "solid"), 1f),
         Variant("SVA", "Severe Thunderstorm Watch", "Severe Thunderstorm Watch", Line(rgb(0xdb, 0x70, 0x93), 1.5f, "solid"), 1f),
+        Variant("HUW", "Hurricane Warning", "Hurricane Warning", Line(rgb(0xdc, 0x14, 0x3c), 2.0f, "solid"), 4.6f),
+        Variant("SSW", "Storm Surge Warning", "Storm Surge Warning", Line(rgb(0xb5, 0x24, 0xf7), 2.0f, "solid"), 4.5f),
+        Variant("TRW", "Tropical Storm Warning", "Tropical Storm Warning", Line(rgb(0xb2, 0x22, 0x22), 1.8f, "solid"), 4.4f),
+        Variant("HUA", "Hurricane Watch", "Hurricane Watch", Line(rgb(0xff, 0, 0xff), 1.5f, "solid"), 4.3f),
+        Variant("SSA", "Storm Surge Watch", "Storm Surge Watch", Line(rgb(0xdb, 0x7f, 0xf7), 1.5f, "solid"), 4.2f),
+        Variant("TRA", "Tropical Storm Watch", "Tropical Storm Watch", Line(rgb(0xf0, 0x80, 0x80), 1.5f, "solid"), 4.1f),
+        Variant("BZW", "Blizzard Warning", "Blizzard Warning", Line(rgb(0xff, 0x45, 0), 2.0f, "solid"), 3.9f),
+        Variant("ISW", "Ice Storm Warning", "Ice Storm Warning", Line(rgb(0x8b, 0, 0x8b), 2.0f, "solid"), 3.8f),
+        Variant("WSW", "Winter Storm Warning", "Winter Storm Warning", Line(rgb(0xff, 0x69, 0xb4), 1.8f, "solid"), 3.7f),
+        Variant("LEW", "Lake Effect Snow Warning", "Lake Effect Snow Warning", Line(rgb(0, 0x8b, 0x8b), 1.8f, "solid"), 3.6f),
+        Variant("ECW", "Extreme Cold Warning", "Extreme Cold Warning", Line(rgb(0, 0, 0xff), 1.5f, "solid"), 3.4f),
+        Variant("WSA", "Winter Storm Watch", "Winter Storm Watch", Line(rgb(0x46, 0x82, 0xb4), 1.5f, "solid"), 3.3f),
+        Variant("ZRY", "Freezing Rain Advisory", "Freezing Rain Advisory", Line(rgb(0xda, 0x70, 0xd6), 1.5f, "solid"), 3.2f),
+        Variant("WWY", "Winter Weather Advisory", "Winter Weather Advisory", Line(rgb(0x7b, 0x68, 0xee), 1.5f, "solid"), 3.1f),
+        Variant("ECA", "Extreme Cold Watch", "Extreme Cold Watch", Line(rgb(0x5f, 0x9e, 0xa0), 1.2f, "solid"), 2.9f),
+        Variant("CWY", "Cold Weather Advisory", "Cold Weather Advisory", Line(rgb(0xaf, 0xee, 0xee), 1.2f, "solid"), 2.8f),
+        Variant("FZW", "Freeze Warning", "Freeze Warning", Line(rgb(0x48, 0x3d, 0x8b), 1.2f, "solid"), 2.7f),
+        Variant("FRY", "Frost Advisory", "Frost Advisory", Line(rgb(0x64, 0x95, 0xed), 1.2f, "solid"), 2.6f),
     ).associateBy { it.code }
 
     val BASE_CODE = mapOf("Tornado Warning" to "TOR", "Tornado Emergency" to "TORE", "Severe Thunderstorm Warning" to "SVR",
         "Flash Flood Warning" to "FFW", "Flash Flood Emergency" to "FFWE", "Special Marine Warning" to "SMW",
         "Extreme Wind Warning" to "EWW", "Snow Squall Warning" to "SQW", "Dust Storm Warning" to "DSW",
-        "Special Weather Statement" to "SPS", "Tornado Watch" to "TOA", "Severe Thunderstorm Watch" to "SVA")
+        "Special Weather Statement" to "SPS", "Tornado Watch" to "TOA", "Severe Thunderstorm Watch" to "SVA",
+        "Hurricane Warning" to "HUW", "Storm Surge Warning" to "SSW", "Tropical Storm Warning" to "TRW", "Hurricane Watch" to "HUA",
+        "Storm Surge Watch" to "SSA", "Tropical Storm Watch" to "TRA", "Blizzard Warning" to "BZW", "Ice Storm Warning" to "ISW",
+        "Winter Storm Warning" to "WSW", "Lake Effect Snow Warning" to "LEW", "Extreme Cold Warning" to "ECW",
+        "Winter Storm Watch" to "WSA", "Freezing Rain Advisory" to "ZRY", "Winter Weather Advisory" to "WWY",
+        "Extreme Cold Watch" to "ECA", "Cold Weather Advisory" to "CWY", "Freeze Warning" to "FZW", "Frost Advisory" to "FRY")
 
     /** "Classic colours" preset: green flash flood, yellow severe, magenta reported/PDS/emergency tornado. */
     val CLASSIC_PRESET: Map<String, Line> = mapOf(
@@ -156,7 +208,7 @@ object Alerts {
     private fun style(event: String, width: Float, fill: Int, priority: Int) =
         Style(NWS_COLORS.getValue(event), width, fill, priority)
 
-    val STYLES: Map<String, Style> = linkedMapOf(
+    val STYLES: Map<String, Style> = linkedMapOf<String, Style>(
         "Tornado Emergency" to style("Tornado Emergency", 4.0f, 0, 11),
         "Tornado Warning" to style("Tornado Warning", 3.0f, 0, 10),
         "Extreme Wind Warning" to style("Extreme Wind Warning", 3.0f, 0, 10),
@@ -169,10 +221,14 @@ object Alerts {
         "Special Weather Statement" to style("Special Weather Statement", 1.5f, 0, 2),
         "Tornado Watch" to style("Tornado Watch", 1.5f, 45, 1),
         "Severe Thunderstorm Watch" to style("Severe Thunderstorm Watch", 1.5f, 45, 1),
-    )
+    ).also { m ->
+        for (ev in WINTER_EVENTS + TROPICAL_EVENTS) m[ev] = style(ev, 1.5f, if (ev.endsWith("Watch")) 40 else 64, 1)
+    }
 
     /** Groups for the filter switches in the app. */
     fun group(event: String): String = when {
+        event in WINTER_EVENTS -> "winter"
+        event in TROPICAL_EVENTS -> "tropical"
         event.endsWith("Watch") -> "watch"            // first: "Tornado Watch" also starts with "Tornado W"
         event == "Tornado Warning" || event == "Tornado Emergency" -> "tornado"
         event == "Severe Thunderstorm Warning" -> "severe"
@@ -213,7 +269,7 @@ object Alerts {
                 "Polygon" -> coords.firstOrNull()?.let { rings.add(ring(it)) }
                 "MultiPolygon" -> for (poly in coords) poly.arr().firstOrNull()?.let { rings.add(ring(it)) }
             }
-            if (rings.isEmpty() && ev.endsWith("Watch")) {
+            if (rings.isEmpty() && (ev.endsWith("Watch") || ev in AREA_EVENTS)) {
                 for (same in p["geocode"].obj()["SAME"].arr()) {
                     val fips = same.str().drop(1).toIntOrNull() ?: continue
                     rings.addAll(countyRings(fips))

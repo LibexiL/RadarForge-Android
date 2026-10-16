@@ -7,6 +7,7 @@ import com.libexil.radarforge.RfLog
 import com.libexil.radarforge.core.ColorTable
 import com.libexil.radarforge.core.Field
 import com.libexil.radarforge.core.ProjectedLayer
+import com.libexil.radarforge.core.Raster
 import com.libexil.radarforge.core.RenderData
 import com.libexil.radarforge.ui.MapState
 import java.nio.ByteBuffer
@@ -30,6 +31,12 @@ class MapRenderer(private val ctx: Context, private val state: MapState) : GLSur
 
     private var radarProg = 0
     private var lineProg = 0
+    private var rasterProg = 0
+    private val rsu = HashMap<String, Int>()
+    private var quadBuf = 0
+    private var quadVao = 0
+    private class RasterGpu(val tex: Int, var lastUse: Long)
+    private val rasters = IdentityHashMap<IntArray, RasterGpu>()
     private val ru = HashMap<String, Int>()
     private val lu = HashMap<String, Int>()
     private var cornerBuf = 0
@@ -45,7 +52,7 @@ class MapRenderer(private val ctx: Context, private val state: MapState) : GLSur
     // ---------------------------------------------------------------- lifecycle
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         // a new context: every old object id is gone
-        fields.clear(); luts.clear(); lineBufs.clear(); ru.clear(); lu.clear()
+        fields.clear(); luts.clear(); lineBufs.clear(); ru.clear(); lu.clear(); rasters.clear(); rsu.clear()
         ready = false
         try {
             radarProg = program(asset("shaders/radar.vert"), asset("shaders/radar.frag"), "radar")
@@ -54,10 +61,20 @@ class MapRenderer(private val ctx: Context, private val state: MapState) : GLSur
                 "u_nrays", "u_cscale", "u_coffset", "u_dscale", "u_doffset", "u_lutmin", "u_lutmax", "u_rf", "u_smooth",
                 "u_nyq", "u_storm")) ru[n] = glGetUniformLocation(radarProg, n)
             for (n in listOf("u_center", "u_scale", "u_vp", "u_width", "u_color")) lu[n] = glGetUniformLocation(lineProg, n)
+            rasterProg = program(asset("shaders/raster.vert"), asset("shaders/raster.frag"), "raster")
+            for (n in listOf("u_rect", "u_center", "u_scale", "u_vp", "u_tex", "u_alpha")) rsu[n] = glGetUniformLocation(rasterProg, n)
             cornerBuf = buffer(RenderData.LINE_CORNERS)
             val vaos = IntArray(1)
             glGenVertexArrays(1, vaos, 0)
             lineVao = vaos[0]
+            quadBuf = buffer(floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 0f, 1f, 1f, 0f, 1f))
+            glGenVertexArrays(1, vaos, 0)
+            quadVao = vaos[0]
+            glBindVertexArray(quadVao)
+            glBindBuffer(GL_ARRAY_BUFFER, quadBuf)
+            glEnableVertexAttribArray(0)
+            glVertexAttribPointer(0, 2, GL_FLOAT, false, 8, 0)
+            glBindVertexArray(0)
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
             glInfo = "${glGetString(GL_RENDERER)} | ${glGetString(GL_VERSION)}"
             RfLog.i("GL ready: $glInfo")
@@ -94,11 +111,13 @@ class MapRenderer(private val ctx: Context, private val state: MapState) : GLSur
             glScissor(vx, vy, vw, vh)
             clear(sc.mapBg)
             val p = sc.panels.getOrNull(i)
+            if (p != null) for (ra in p.rasters) drawRaster(ra, v, vw, vh)
             if (p?.field != null) drawRadar(p, v, vw, vh)
             val viewKm = vw / v.scale
             val halfW = vw / 2f / v.scale
             val halfH = vh / 2f / v.scale
             for (l in sc.layers) if (viewKm <= l.maxViewKm) drawLines(l, v, vw, vh, halfW, halfH)
+            if (p != null) for (l in p.lines) if (viewKm <= l.maxViewKm) drawLines(l, v, vw, vh, halfW, halfH)
             for (l in sc.overlays) drawLines(l, v, vw, vh, halfW, halfH)
         }
         glDisable(GL_SCISSOR_TEST)
@@ -233,6 +252,48 @@ class MapRenderer(private val ctx: Context, private val state: MapState) : GLSur
         glBindVertexArray(0)
     }
 
+    // ---------------------------------------------------------------- pictures on the map
+    private fun rasterGpu(r: Raster): RasterGpu {
+        rasters[r.argb]?.let { it.lastUse = frameNo; return it }
+        val ids = IntArray(1)
+        glGenTextures(1, ids, 0)
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, ids[0])
+        // premultiplied RGBA, so linear filtering doesn't darken the edges of the coloured areas
+        val b = ByteBuffer.allocateDirect(r.w * r.h * 4).order(ByteOrder.nativeOrder())
+        for (c in r.argb) {
+            val a = (c ushr 24) and 0xff
+            b.put((((c shr 16) and 0xff) * a / 255).toByte()); b.put((((c shr 8) and 0xff) * a / 255).toByte())
+            b.put(((c and 0xff) * a / 255).toByte()); b.put(a.toByte())
+        }
+        b.position(0)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, r.w, r.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, b)
+        val filter = if (r.smooth) GL_LINEAR else GL_NEAREST
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        val g = RasterGpu(ids[0], frameNo)
+        rasters[r.argb] = g
+        return g
+    }
+
+    private fun drawRaster(r: Raster, v: MapState.View, vw: Int, vh: Int) {
+        if (r.w <= 0 || r.h <= 0 || r.alpha <= 0f) return
+        val g = rasterGpu(r)
+        glUseProgram(rasterProg)
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, g.tex)
+        glUniform1i(rsu.getValue("u_tex"), 0)
+        glUniform4f(rsu.getValue("u_rect"), r.x0, r.y0, r.x1, r.y1)
+        glUniform2f(rsu.getValue("u_center"), v.cx, v.cy)
+        glUniform1f(rsu.getValue("u_scale"), v.scale)
+        glUniform2f(rsu.getValue("u_vp"), vw.toFloat(), vh.toFloat())
+        glUniform1f(rsu.getValue("u_alpha"), r.alpha)
+        glBindVertexArray(quadVao)
+        glDrawArrays(GL_TRIANGLES, 0, 6)
+        glBindVertexArray(0)
+    }
+
     // ---------------------------------------------------------------- lines
     private fun lineBuf(l: ProjectedLayer): Int = lineBufs.getOrPut(l.pts) { buffer(l.pts) }
 
@@ -296,6 +357,11 @@ class MapRenderer(private val ctx: Context, private val state: MapState) : GLSur
         val wantBufs = java.util.Collections.newSetFromMap(IdentityHashMap<FloatArray, Boolean>())
         for (l in sc.layers) wantBufs.add(l.layer.pts)
         for (l in sc.overlays) wantBufs.add(l.layer.pts)
+        for (p in sc.panels) for (l in p.lines) wantBufs.add(l.layer.pts)
+        val wantRasters = java.util.Collections.newSetFromMap(IdentityHashMap<IntArray, Boolean>())
+        for (p in sc.panels) for (r in p.rasters) wantRasters.add(r.argb)
+        val dropRasters = rasters.filter { (k, g) -> k !in wantRasters && frameNo - g.lastUse > 90 }
+        for ((k, g) in dropRasters) { glDeleteTextures(1, intArrayOf(g.tex), 0); rasters.remove(k) }
         val dropBufs = lineBufs.keys.filter { it !in wantBufs }
         for (k in dropBufs) glDeleteBuffers(1, intArrayOf(lineBufs.remove(k)!!), 0)
         val wantLuts = java.util.Collections.newSetFromMap(IdentityHashMap<ColorTable, Boolean>())

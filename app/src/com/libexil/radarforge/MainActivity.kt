@@ -100,6 +100,10 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     lateinit var dm: DataManager
     /** Dealiased velocity and Σ trails, made in the background. */
     lateinit var derived: DerivedFields
+    /** The Models view (HRRR, NAM, RAP, GFS maps). */
+    lateinit var models: ModelsMode
+    /** Winter and tropical layers on the radar map. */
+    lateinit var wx: WeatherLayers
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "rf-geo").apply { isDaemon = true } }
 
@@ -124,6 +128,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             val now = System.currentTimeMillis()
             flashing.entries.removeAll { it.value[1] <= now }
             rebuildAlerts()
+            if (models.active) { flashing.clear(); return }
             val sc = renderer.scene
             renderer.scene = Scene(sc.mapBg, sc.gapBg, sc.layers, if (spcLayers.isEmpty()) alertLayers else spcLayers + alertLayers,
                 sc.panels, sc.keep)
@@ -194,7 +199,14 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         state.scale = prefs.mapScale
         @Suppress("DEPRECATION")
         val kept = lastNonConfigurationInstance as? Retained
+        wx = WeatherLayers(this)
+        models = ModelsMode(this)
+        com.libexil.radarforge.core.Models.cacheDir = java.io.File(cacheDir, "models")
+        // the phone's memory decides how many decoded model fields stay loaded
+        com.libexil.radarforge.core.Models.gridCells = (Runtime.getRuntime().maxMemory() / 4 / 4 / 3).coerceIn(4_000_000L, 20_000_000L)
         buildViews()
+        overlay.decor = wx.decors
+        overlay.extraReadout = { km -> wx.readout(km) }
         if (kept != null) {
             dm = kept.dm
             derived = kept.derived
@@ -263,6 +275,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         state.activePanel = k.activePanel.coerceIn(0, state.panelCount - 1)
         selectSite(s, resetView = false, keepData = true)
         state.cx = k.cx; state.cy = k.cy; state.scale = k.scale
+        if (prefs.viewMode == "models") setViewMode("models")
         refreshProductChips()
         when (k.reopen) {
             "themes" -> main.postDelayed({ if (!sheets.isOpen) Sheets.themes(this) }, 120)
@@ -275,6 +288,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         dm.start()
         if (playing) main.post(loopTick)
         startLiveLocation()
+        wx.start()
         main.removeCallbacks(statusTick)
         main.postDelayed(statusTick, 30_000)
         // e.g. back on Wi-Fi: the previous scans may load now
@@ -286,6 +300,8 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         super.onPause()
         glView.onPause()
         dm.stop()
+        wx.stop()
+        models.setPlaying(false)
         main.removeCallbacks(loopTick)
         main.removeCallbacks(statusTick)
         prefs.mapScale = state.scale
@@ -301,6 +317,8 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             derived.shutdown()
         }
         worker.shutdownNow()
+        models.shutdown()
+        wx.shutdown()
         main.removeCallbacksAndMessages(null)
         stopLocation()
         stopLiveLocation()
@@ -328,6 +346,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         when {
             sheets.isOpen -> sheets.close()
             overlay.inspectKm != null -> overlay.hideInspector()
+            models.active -> setViewMode("radar")
             overlay.tool != OverlayView.Tool.NONE -> closeTools()
             looping -> stopLoop()
             else -> @Suppress("DEPRECATION") super.onBackPressed()
@@ -412,6 +431,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
                 if (saved != null) {
                     selectSite(saved, resetView = true)
                     prefs.mapCenterFor(saved.id)?.let { c -> state.cx = c[0]; state.cy = c[1] }
+                    if (prefs.viewMode == "models") setViewMode("models")
                     if (prefs.seenWhatsNew != WHATS_NEW) main.postDelayed({ if (!sheets.isOpen) Sheets.whatsNew(this) }, 900)
                 } else firstLaunch()
             }
@@ -437,8 +457,9 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         val changed = site?.id != s.id
         site = s
         prefs.site = s.id
-        siteTitle.text = s.id
+        if (!models.active) siteTitle.text = s.id
         if (changed) {
+            wx.clearForSite()
             fieldCache.clear()
             if (!keepData) derived.clear()
             tilts = emptyList()
@@ -473,10 +494,12 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             main.post {
                 if (site?.id != s.id) return@post
                 geo = g
-                overlay.proj = proj
-                overlay.cities = cities
-                overlay.sites = sites
-                overlay.siteXY = xy
+                if (!models.active) {
+                    overlay.proj = proj
+                    overlay.cities = cities
+                    overlay.sites = sites
+                    overlay.siteXY = xy
+                }
                 overlay.currentSite = s.id
                 rebuildRings()
                 rebuildAlerts()
@@ -533,7 +556,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             setPadding(dpi(10f), dpi(5f), dpi(10f), dpi(5f))
             background = ripple(null, rounded(Color.WHITE, dp(10f)))
             isClickable = true
-            setOnClickListener { Sheets.sites(this@MainActivity) }
+            setOnClickListener { if (models.active) SheetsWx.models(this@MainActivity) else Sheets.sites(this@MainActivity) }
         }
         val titleRow = W.hRow(this)
         siteTitle = W.text(this, "RadarForge", 19f, C.text, true)
@@ -549,10 +572,10 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         siteSub = W.text(this, "Loading map…", 12.5f, C.dim).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END }
         siteBlock.addView(siteSub, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dpi(2f) })
         topBar.addView(siteBlock, LinearLayout.LayoutParams(0, -2, 1f))
+        topBar.addView(buildViewPill())
         warnBtn = W.iconButton(this, Icon.WARNING, "Warnings") { Sheets.warnings(this) }
         topBar.addView(warnBtn)
-        topBar.addView(W.iconButton(this, Icon.LAYERS, "Map layers") { Sheets.layers(this) })
-        topBar.addView(W.iconButton(this, Icon.SHARE, "Share a picture of the map") { shareScreenshot() })
+        topBar.addView(W.iconButton(this, Icon.LAYERS, "Layers") { if (models.active) SheetsWx.models(this) else SheetsWx.layers(this) })
         topBar.addView(W.iconButton(this, Icon.SLIDERS, "Settings") { Sheets.settings(this) }.apply {
             setOnLongClickListener { Sheets.themes(this@MainActivity); true }
         })
@@ -621,6 +644,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         tools.addView(locateBtn)
         barRow.addView(tools)
         bottomBar.addView(barRow, LinearLayout.LayoutParams(-1, -2))
+        bottomBar.addView(models.buildBar(), LinearLayout.LayoutParams(-1, -2))
         arrangeBottomBar()
         root.addView(bottomBar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
 
@@ -637,6 +661,16 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         root.addView(learnCard, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
             leftMargin = dpi(8f); rightMargin = dpi(8f); bottomMargin = dpi(120f)
         })
+        hintCard = W.text(this, "", 14f, C.accentText).apply {
+            setLineSpacing(0f, 1.15f)
+            setPadding(dpi(14f), dpi(10f), dpi(14f), dpi(10f))
+            visibility = View.GONE
+            isClickable = true
+            background = rounded(C.accent, dp(12f))
+            elevation = dp(6f)
+            setOnClickListener { visibility = View.GONE }
+        }
+        root.addView(hintCard, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply { leftMargin = dpi(12f); rightMargin = dpi(12f); topMargin = dpi(70f) })
         sheets = SheetHost(this).apply { elevation = dp(8f) }   // above the bars (elevation 4dp)
         root.addView(sheets, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
@@ -648,6 +682,137 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     }
 
     private lateinit var learnCard: TextView
+    private lateinit var hintCard: TextView
+    private lateinit var pillRadar: TextView
+    private lateinit var pillModels: TextView
+
+    /** The Radar | Models switch in the top bar. */
+    private fun buildViewPill(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = rounded(C.button, dp(17f), C.border, dpi(1f))
+            setPadding(dpi(2f), dpi(2f), dpi(2f), dpi(2f))
+        }
+        val narrow = resources.configuration.screenWidthDp < 380
+        fun seg(label: String, mode: String) = W.text(this, label, if (narrow) 12.5f else 13.5f, C.text, true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dpi(if (narrow) 9f else 12f), dpi(6f), dpi(if (narrow) 9f else 12f), dpi(6f))
+            isClickable = true
+            contentDescription = "Switch to the $label view"
+            setOnClickListener { setViewMode(mode) }
+        }
+        pillRadar = seg("Radar", "radar"); pillModels = seg("Models", "models")
+        row.addView(pillRadar); row.addView(pillModels)
+        refreshPill()
+        return row.also { it.layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dpi(2f) } }
+    }
+
+    private fun refreshPill() {
+        if (!::pillRadar.isInitialized) return
+        val m = models.active
+        for ((v, on) in listOf(pillRadar to !m, pillModels to m)) {
+            v.background = if (on) rounded(C.accent, dp(15f)) else null
+            v.setTextColor(if (on) C.accentText else C.text)
+        }
+    }
+
+    /** Switches between the radar and the model maps (F6 on the desktop). */
+    fun setViewMode(mode: String) {
+        val toModels = mode == "models"
+        if (toModels == models.active) return
+        prefs.viewMode = mode
+        if (sheets.isOpen) sheets.close()
+        if (toModels) {
+            if (basemap == null) return
+            if (following) setFollowing(false)
+            stopLoop()
+            closeTools()
+            learnCard.visibility = View.GONE
+            barRow.visibility = View.GONE
+            loopRow.visibility = View.GONE
+            toolCard.visibility = View.GONE
+            models.enter()
+            showHint("models_view", "Model maps: pick a field below, step through the forecast hours, and tap the model chip to change the model, run or area. Tap Radar to go back.")
+        } else {
+            models.exit()
+            barRow.visibility = View.VISIBLE
+            siteTitle.text = site?.id ?: "RadarForge"
+            updateStatusLine()
+            rebuild()
+        }
+        refreshPill()
+        root.post { updateArea() }
+    }
+
+    /** The radar's own projection back on the overlay (leaving the Models view). */
+    fun restoreRadarOverlay() {
+        val g = geo
+        overlay.proj = g?.proj
+        overlay.cities = g?.cities
+        overlay.sites = if (g != null) sites else emptyList()
+        overlay.siteXY = g?.siteXY ?: FloatArray(0)
+        overlay.decor = wx.decors
+        updateLocationKm()
+        rebuildAlerts()
+        rebuildFeeds()
+        rebuildSpc()
+        overlay.invalidate()
+    }
+
+    fun setModelTitle(name: String, status: String) {
+        if (!models.active) return
+        siteTitle.text = name
+        siteSub.text = status
+        siteSub.setTextColor(C.dim)
+        busy.visibility = if (models.busy) View.VISIBLE else View.GONE
+    }
+
+    /** A one-time tip floating over the map (tap to dismiss). */
+    fun showHint(id: String, text: String) {
+        if (id in prefs.hintsSeen || !::hintCard.isInitialized) return
+        prefs.hintsSeen = prefs.hintsSeen + id
+        hintCard.text = text + "  ✕"
+        hintCard.visibility = View.VISIBLE
+        (hintCard.layoutParams as? FrameLayout.LayoutParams)?.let { it.topMargin = topBar.bottom + dpi(8f); hintCard.requestLayout() }
+        main.postDelayed({ hintCard.visibility = View.GONE }, 9000)
+    }
+
+    /** The panels' products changed elsewhere (a preset). */
+    fun productsChanged() {
+        refreshProductChips()
+        requestLoopFrames()
+        rebuild()
+        updateLearnCard()
+    }
+
+    /** Precipitation type in the active panel (on), or back to reflectivity (off). */
+    fun togglePtype(on: Boolean) {
+        val list = prefs.panelProducts.toMutableList()
+        val i = state.activePanel.coerceIn(0, 3)
+        if (on) list[i] = Product.PTYPE else for (k in list.indices) if (list[k] == Product.PTYPE) list[k] = Product.REF
+        prefs.panelProducts = list
+        prefs.layerPreset = ""
+        productsChanged()
+        if (on) showHint("ptype", "P-Type colours the radar by what's falling: green-red rain, blue snow, orange sleet, pink freezing rain.")
+    }
+
+    fun onTropicalData() {
+        if (sheets.isOpen && sheets.title == "Tropical") SheetsWx.tropical(this)
+    }
+
+    /** lat / lon of the middle of the active panel. */
+    fun mapCenterLatLon(): DoubleArray? {
+        val pr = if (models.active) models.geo?.proj else geo?.proj
+        return pr?.inverse(state.cx.toDouble(), state.cy.toDouble())
+    }
+
+    /** Runs [work] off the main thread, then [then] on it with the result (or null and the error). */
+    fun <T> runInBackground(work: () -> T, then: (T?, String?) -> Unit) {
+        Thread {
+            val r = try { Result.success(work()) } catch (e: Throwable) { Result.failure(e) }
+            main.post { if (!isDestroyed) then(r.getOrNull(), r.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName }) }
+        }.apply { isDaemon = true }.start()
+    }
     private lateinit var barRow: LinearLayout
     private lateinit var productScroll: HorizontalScrollView
     private lateinit var toolsRow: LinearLayout
@@ -846,6 +1011,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         val i = state.activePanel.coerceIn(0, 3)
         list[i] = p
         prefs.panelProducts = list
+        if (p == Product.PTYPE) showHint("ptype", "P-Type colours the radar by what's falling: green-red rain, blue snow, orange sleet, pink freezing rain.")
         refreshProductChips()
         requestLoopFrames()
         rebuild()
@@ -1031,6 +1197,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     // ---------------------------------------------------------------- storm reports, chasers, SPC
     /** Projects storm reports and chaser positions near the radar for the overlay. */
     fun rebuildFeeds() {
+        if (models.active) return
         val g = geo
         if (g == null) {
             overlay.reports = emptyList(); overlay.chasers = emptyList(); visibleReports = emptyList()
@@ -1056,6 +1223,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
 
     /** SPC outlook outlines + labels and mesoscale discussion outlines, projected around the radar. */
     fun rebuildSpc() {
+        if (models.active) return
         val g = geo
         if (g == null) { spcLayers = emptyList(); overlay.outlookLabels = emptyList(); overlay.mcds = emptyList(); return }
         val d = resources.displayMetrics.density
@@ -1105,11 +1273,13 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     override fun onStatus(text: String, busy: Boolean, error: Boolean) {
         statusText = text
         statusError = error
+        if (models.active) return
         this.busy.visibility = if (busy) View.VISIBLE else View.GONE
         updateStatusLine()
     }
 
     fun updateStatusLine() {
+        if (models.active) { models.updateBar(); return }
         val s = site ?: return
         val newest = listOfNotNull(dm.live, dm.complete).maxOfOrNull { it.startMs }
         if (statusText.isNotEmpty() || newest == null) {
@@ -1217,6 +1387,17 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         return if (f.product == Product.VEL) vel else vel.withCodes(vel.codes8, vel.codes16, vel.variant, product = f.product, stormU = f.stormU, stormV = f.stormV)
     }
 
+    /** The precipitation-type copy of a reflectivity field, once the HRRR grid for its hour is in (null until then). */
+    private fun ptypeOf(base: Field): Field? {
+        val s = site ?: return null
+        val t = base.sweepMs
+        val hour = (t + 1_800_000L) / 3_600_000L
+        return derived.get("P|${base.key}|$hour", force = true) {
+            val g = com.libexil.radarforge.core.Winter.surfaceGrid(s.lat, s.lon, t) ?: return@get null
+            com.libexil.radarforge.core.Winter.ptypeField(base, g)
+        }
+    }
+
     private fun trailKey(chain: List<Field>) =
         "T|${prefs.dealias}|" + chain.joinToString("|") { it.key }.hashCode() + "|" + chain.size + "|" + chain.last().key
 
@@ -1301,6 +1482,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         val g = geo
         if (g == null || !prefs.layer("warnings")) {
             alertLayers = emptyList(); visibleAlerts = emptyList(); overlay.alerts = emptyList()
+            wx.setAreaAlerts(emptyList()) { 0 }
             warnBtn.badge = null
             return
         }
@@ -1312,13 +1494,15 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
                 Geo.distanceKm(s.lat, s.lon, (a.minLat + a.maxLat) / 2.0, (a.minLon + a.maxLon) / 2.0) < 900
         }
         visibleAlerts = near
-        overlay.alerts = near
+        if (!models.active) overlay.alerts = near
         val d = resources.displayMetrics.density
         // higher threat levels drawn last, on top
         if (alertProj.size > 3000) alertProj.clear()
         val now = System.currentTimeMillis()
         val out = ArrayList<LayerDraw>()
+        wx.setAreaAlerts(near) { warnColor(it) }
         for (a in near.sortedBy { Alerts.VARIANTS[it.variant]?.priority ?: 0f }) {
+            if (a.isArea) continue                       // shaded by county (WeatherLayers)
             val ln = warnLine(a.variant)
             val w = ln.width * d * 1.1f
             // (stepping through the loop rebuilds these often: each outline is projected once)
@@ -1336,13 +1520,14 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             out.add(LayerDraw(layer, ln.color, w, halo = !a.isWatch, innerPx = w * ln.innerShare))
         }
         alertLayers = out
-        val warnings = near.count { !it.isWatch }
+        val warnings = near.count { !it.isWatch && !it.isArea }
         warnBtn.badge = if (warnings > 0) (if (warnings > 99) "99+" else warnings.toString()) else null
         warnBtn.setTint(if (near.any { it.event.startsWith("Tornado") && !it.isWatch }) 0xffff5a5a.toInt() else C.text)
     }
 
     /** Rebuilds what is drawn from the current data and settings. Cheap; call freely. */
     fun rebuild() {
+        if (models.active) { models.rebuild(); return }
         val ref = dm.live ?: dm.complete
         val newTilts = if (looping && frameIndex >= 0) tilts else tiltsOf(dm.complete ?: dm.live)
         if (newTilts.isNotEmpty()) tilts = newTilts
@@ -1362,14 +1547,24 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             rebuildAlerts()
         }
         val baseTimes = ArrayList<Long?>()          // the scan each panel shows (a trail's own times can be older)
+        // winter layers follow the scan on screen (live: now)
+        wx.timeMs = if (looping && shownIndex in frames.indices) frames[shownIndex].timeMs else 0L
+        wx.refreshWinter()
+        val wxRasters = wx.rasters()
         for (i in 0 until state.panelCount) {
             val p = products[i]
             val table = palettes.table(p.palette)
             val pk = pick(p, frames)
             val base = pk.field
             baseTimes.add(base?.sweepMs)
-            val f = display(base, p, frames, shownIndex)
-            panelDraws.add(PanelDraw(f, table, prefs.smooth))
+            var note = pk.note
+            val f = if (p == Product.PTYPE && base != null) {
+                val pt = ptypeOf(base)
+                if (pt == null && note == null) note = if (site?.let { com.libexil.radarforge.core.Winter.failedRecently(it.lat, it.lon, base.sweepMs) } == true)
+                    "no HRRR precipitation type for this hour yet" else "precipitation type loading…"
+                pt ?: base
+            } else display(base, p, frames, shownIndex)
+            panelDraws.add(PanelDraw(f, table, prefs.smooth && p != Product.PTYPE, wxRasters))
             var title = "$siteId  ${p.short} ${if (base != null) String.format(java.util.Locale.US, "%.1f°", base.elevation) else ""}".trim()
             if (base != null) {
                 val v = f?.variant ?: ""
@@ -1378,7 +1573,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
                 if (prefs.dealias && p.isDoppler && base.nyquist > 0f) title += if (n != null || v.contains("dealiased")) "  dealiased" else "  dealiasing…"
             }
             val sub = if (base != null) "${Time.hmsZ(base.sweepMs)} · ${Time.local(base.sweepMs)}" else (if (ref == null) "waiting for data" else "")
-            infos.add(OverlayView.PanelInfo(p, f, table, title, sub, pk.note))
+            infos.add(OverlayView.PanelInfo(p, f, table, title, sub, note))
         }
 
         val layers = ArrayList<LayerDraw>()
@@ -1395,6 +1590,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             add("countries", 1.6f)
             add("states", 1.6f)
             if (prefs.layer("rings")) rings?.let { layers.add(LayerDraw(it, C.rings, 1.0f * d, 2500f)) }
+            layers.addAll(wx.lines())
         }
 
         // loop frames to keep on the GPU so playback is smooth (what each frame shows: trail / dealiased)
@@ -1451,6 +1647,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         if (state.panelCount > 1 && index != state.activePanel) {
             state.activePanel = index
             refreshProductChips()
+            if (models.active) models.updateBar()
             overlay.invalidate()
         }
     }
@@ -1468,6 +1665,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     }
 
     override fun onMapTapped(lat: Double, lon: Double): Boolean {
+        if (models.active) return false
         if (!prefs.layer("outlook") || dm.outlook.isEmpty() || dm.outlookShownDay != prefs.outlookDay) return false
         val hits = dm.outlook.filter { it.contains(lat, lon) }
         if (hits.none { it.category == "CATEGORICAL" }) return false
@@ -1483,7 +1681,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
 
     override fun onInspect(km: FloatArray?, panel: Int) {
         inspectAt = km
-        updateLearnCard()
+        if (!models.active) updateLearnCard()
     }
 
     /** Learn mode: plain-language notes for the spot under the cross-hair (all products of the scan shown there). */
@@ -1504,7 +1702,8 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             if (!sm.rangeFolded) values[p] = sm.value
             if (beamFt == null) beamFt = sm.heightKm * 3280.84
         }
-        val notes = Learn.explain(values, beamFt)
+        val sfc = if (prefs.layer("freezing") || Product.PTYPE in shown) wx.surfaceAt(km, if (looping) overlay.dataTimeMs else 0L) else null
+        val notes = Learn.explain(values, beamFt, sfc?.first?.takeIf { Product.PTYPE in shown }, sfc?.second)
         learnCard.text = if (notes.isEmpty()) "No echo here. Press and hold on the coloured radar data to see what it means."
             else notes.joinToString("\n") + "\nTap for the radar guide."
         learnCard.visibility = View.VISIBLE
@@ -1515,6 +1714,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
 
     /** Goes to a point (a storm report, a chaser): switches to the nearest radar when it's far away, then centres on it. */
     fun goToPoint(lat: Double, lon: Double) {
+        if (models.active) setViewMode("radar")
         val g = geo
         val far = g == null || Geo.distanceKm(g.site.lat, g.site.lon, lat, lon) > 230
         if (far && prefs.goToNearestRadar) {
@@ -1544,6 +1744,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
 
     /** Goes to a warning: switches to the radar nearest it (when that setting is on), then zooms in. */
     fun goToAlert(a: Alert) {
+        if (models.active) setViewMode("radar")
         stopFollowing()
         if (prefs.goToNearestRadar) {
             val lat = (a.minLat + a.maxLat) / 2.0
@@ -1808,9 +2009,9 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
 
     private fun updateLocationKm() {
         val loc = lastLocation ?: return
-        val g = geo ?: return
+        val pr = (if (models.active) models.geo?.proj else geo?.proj) ?: return
         val xy = FloatArray(2)
-        g.proj.forward(loc.latitude, loc.longitude, xy, 0)
+        pr.forward(loc.latitude, loc.longitude, xy, 0)
         overlay.locationKm = xy
         overlay.invalidate()
     }
@@ -1953,7 +2154,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         const val REQ_LOCATION_LIVE = 13
         const val REQ_IMPORT_PAL = 21
         /** Bump to show the "what's new" sheet once after an update. */
-        const val WHATS_NEW = "1.6.0"
+        const val WHATS_NEW = "1.7.0"
         private val TRAIL_RE = Regex("trail(\\d+)")
     }
 }

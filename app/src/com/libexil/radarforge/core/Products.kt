@@ -14,7 +14,9 @@ enum class Product(
     SW("SW", "Spectrum Width", "SW", "Base", "SW", "SW", "m/s", 1),
     ZDR("ZDR", "Differential Reflectivity", "ZDR", "Dual-Pol", "ZDR", "ZDR", "dB", 2),
     CC("CC", "Correlation Coefficient", "CC", "Dual-Pol", "RHO", "CC", "", 3),
-    PHI("PHI", "Differential Phase", "PHI", "Dual-Pol", "PHI", "PHI", "deg", 1);
+    PHI("PHI", "Differential Phase", "PHI", "Dual-Pol", "PHI", "PHI", "deg", 1),
+    /** (1.7) Reflectivity coloured by precipitation type (rain / snow / sleet / freezing rain) from the HRRR. */
+    PTYPE("PTYPE", "Precipitation Type", "P-Type", "Derived", "REF", "PTYPE", "dBZ", 0);
 
     val isVelocity: Boolean get() = units == "m/s"
 

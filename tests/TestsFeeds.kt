@@ -91,7 +91,7 @@ private fun lsr() {
     ok(r[3].kind == ReportKind.TORNADO && r[3].title == "Tornado" && r[3].magnitude == "", "tornado: ${r[3].title}")
     for ((t, k) in listOf("FUNNEL CLOUD" to ReportKind.FUNNEL, "WALL CLOUD" to ReportKind.WALL_CLOUD, "WATERSPOUT" to ReportKind.TORNADO,
         "MARINE TSTM WIND" to ReportKind.WIND_GUST, "NON-TSTM WND DMG" to ReportKind.WIND_DAMAGE, "FLASH FLOOD" to ReportKind.FLOOD,
-        "EXTR WIND CHILL" to ReportKind.OTHER, "SNOW" to ReportKind.OTHER, "MARINE HAIL" to ReportKind.HAIL)) {
+        "EXTR WIND CHILL" to ReportKind.OTHER, "SNOW" to ReportKind.SNOW, "HEAVY SNOW" to ReportKind.SNOW, "BLIZZARD" to ReportKind.BLIZZARD, "FREEZING RAIN" to ReportKind.ICE, "SLEET" to ReportKind.SLEET, "MARINE HAIL" to ReportKind.HAIL)) {
         ok(Reports.kindOf(t) == k, "$t -> ${Reports.kindOf(t)}")
     }
     ok(Reports.lsrUrl(6).endsWith("lsr.geojson?hours=6") && Reports.lsrUrl(500).endsWith("hours=72"), "url")

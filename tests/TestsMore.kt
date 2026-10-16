@@ -19,6 +19,7 @@ fun registerMore() {
     registerLoop()
     registerData()
     registerReleases()
+    registerModels()
 }
 
 private fun s3Listing() {

@@ -473,7 +473,16 @@ class SheetHost(ctx: Context) : FrameLayout(ctx) {
     }
 
     /** Shows [content] under a title bar. [fullHeight] makes the sheet use most of the screen (lists). */
+    /** The title of the sheet showing (or last shown). */
+    var title: String = ""
+        private set
+    private var scroller: ScrollView? = null
+
     fun show(title: String, content: View, fullHeight: Boolean = false, scroll: Boolean = true, actions: List<View> = emptyList()) {
+        // showing the same sheet again (after a change in it): swap the contents in place, keeping the scroll position
+        val same = isOpen && title == this.title
+        val keepScroll = if (same) scroller?.scrollY ?: 0 else 0
+        this.title = title
         removeCard(immediate = true)
         onClosed = null
         val ctx = context
@@ -497,7 +506,9 @@ class SheetHost(ctx: Context) : FrameLayout(ctx) {
         val body: View = if (scroll) ScrollView(ctx).apply {
             isFillViewport = false
             addView(content.apply { setPadding(dpi(14f), dpi(2f), dpi(14f), dpi(28f)) })
+            if (keepScroll > 0) post { scrollTo(0, keepScroll) }
         } else content
+        scroller = body as? ScrollView
         col.addView(body, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, if (fullHeight) 0 else LayoutParams.WRAP_CONTENT, if (fullHeight) 1f else 0f))
         // full-height sheets fill the host below a small gap, so they shrink with the keyboard;
         // others wrap their content, up to 80% of the host
@@ -519,6 +530,7 @@ class SheetHost(ctx: Context) : FrameLayout(ctx) {
         addView(wrapper, lp)
         card = wrapper
         visibility = VISIBLE
+        if (same) { scrim.animate().cancel(); scrim.alpha = 1f; return }
         wrapper.translationY = dp(600f)
         wrapper.animate().translationY(0f).setDuration(240).setInterpolator(DecelerateInterpolator(2f)).start()
         scrim.animate().alpha(1f).setDuration(200).start()

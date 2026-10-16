@@ -187,7 +187,7 @@ class Prefs(ctx: Context) {
         get() = p.getInt("report_hours", 6).let { if (it in REPORT_HOURS) it else 6 }
         set(v) = put { putInt("report_hours", v) }
 
-    /** Report filters: tornado, hail, wind, flood, other (rain, snow...). */
+    /** Report filters: tornado, hail, wind, flood, winter, other. */
     fun reportGroup(name: String) = p.getBoolean("rep_$name", name != "other")
     fun setReportGroup(name: String, on: Boolean) = put { putBoolean("rep_$name", on) }
 
@@ -243,8 +243,77 @@ class Prefs(ctx: Context) {
         get() = p.getInt("track_minutes", 60).let { if (it in TRACK_MINUTES) it else 60 }
         set(v) = put { putInt("track_minutes", v) }
 
+    // ---- views: radar or models (1.7)
+    /** "radar" or "models". */
+    var viewMode: String
+        get() = s("view_mode", "radar").let { if (it == "models") it else "radar" }
+        set(v) = put { putString("view_mode", v) }
+
+    var modelId: String
+        get() = s("model_id", "hrrr")
+        set(v) = put { putString("model_id", v) }
+
+    /** The run shown (ms), or 0 for the newest. */
+    var modelRun: Long
+        get() = p.getLong("model_run", 0L)
+        set(v) = put { putLong("model_run", v) }
+
+    var modelFh: Int
+        get() = p.getInt("model_fh", 1).coerceAtLeast(0)
+        set(v) = put { putInt("model_fh", v) }
+
+    /** The field in each of the four panels. */
+    var modelFields: List<String>
+        get() = s("model_fields", "refc,cape_ml,stp,t2m").split(",").let { (it + listOf("refc", "cape_ml", "stp", "t2m")).take(4) }
+        set(v) = put { putString("model_fields", v.take(4).joinToString(",")) }
+
+    var modelRegion: String
+        get() = s("model_region", "CONUS")
+        set(v) = put { putString("model_region", v) }
+
+    var modelPanels: Int
+        get() = p.getInt("model_panels", 1).let { if (it in listOf(1, 2, 4)) it else 1 }
+        set(v) = put { putInt("model_panels", v) }
+
+    var modelOpacity: Float
+        get() = p.getFloat("model_opacity", 0.85f).coerceIn(0.3f, 1f)
+        set(v) = put { putFloat("model_opacity", v) }
+
+    // ---- winter and tropical (1.7)
+    /** NOHRSC snowfall total shown: 24, 48 or 72 hours. */
+    var snowfallHours: Int
+        get() = p.getInt("snowfall_hours", 24).let { if (it in listOf(24, 48, 72)) it else 24 }
+        set(v) = put { putInt("snowfall_hours", v) }
+
+    /** MRMS radar-estimated rainfall total: 24, 48 or 72 hours. */
+    var rainfallHours: Int
+        get() = p.getInt("rainfall_hours", 24).let { if (it in listOf(24, 48, 72)) it else 24 }
+        set(v) = put { putInt("rainfall_hours", v) }
+
+    /** The preset last applied ("" when the layers were changed by hand since). */
+    var layerPreset: String
+        get() = s("layer_preset", "")
+        set(v) = put { putString("layer_preset", v) }
+
+    /** Winter colour table for reflectivity (bright snow shades). */
+    var winterColors: Boolean
+        get() = p.getBoolean("winter_colors", false)
+        set(v) = put { putBoolean("winter_colors", v) }
+
+    /** First-time hints already shown (ids). */
+    var hintsSeen: Set<String>
+        get() = s("hints_seen", "").split(",").filter { it.isNotBlank() }.toSet()
+        set(v) = put { putString("hints_seen", v.joinToString(",")) }
+
+    /** Collapsed sections of the Layers sheet. */
+    var collapsedSections: Set<String>
+        get() = s("collapsed_sections", "radar_extras,map").split(",").filter { it.isNotBlank() }.toSet()
+        set(v) = put { putString("collapsed_sections", v.joinToString(",")) }
+
     companion object {
-        val OFF_BY_DEFAULT = setOf("reports", "chasers", "outlook", "mcd")
+        /** Off until switched on (the winter and tropical layers come with presets). */
+        val OFF_BY_DEFAULT = setOf("reports", "chasers", "outlook", "mcd", "freezing", "snowfall", "rainfall", "tropical",
+            "tropical_wind", "tropical_models", "tropical_outlook", "buoys")
         val REPORT_HOURS = listOf(1, 3, 6, 12, 24)
         val TRACK_MINUTES = listOf(30, 60, 90, 120)
         const val MAX_PREVIOUS = 20

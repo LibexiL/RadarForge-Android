@@ -21,7 +21,7 @@ class MapState {
     @Volatile var surfaceH = 1
     @Volatile var area = RectF(0f, 0f, 1f, 1f)
 
-    val minScale = 0.12f
+    @Volatile var minScale = 0.12f
     val maxScale = 120f
 
     class View(val cx: Float, val cy: Float, val scale: Float, val panels: List<RectF>, val surfaceH: Int)
@@ -83,9 +83,12 @@ class MapState {
         clampCenter()
     }
 
-    private fun clampCenter() {
-        cx = cx.coerceIn(-2500f, 2500f)
-        cy = cy.coerceIn(-2500f, 2500f)
+    /** How far (km) the centre may wander from the projection's origin (wider for model maps). */
+    @Volatile var limitKm = 2500f
+
+    fun clampCenter() {
+        cx = cx.coerceIn(-limitKm, limitKm)
+        cy = cy.coerceIn(-limitKm, limitKm)
     }
 
     /** Width of the view in km (largest panel). */

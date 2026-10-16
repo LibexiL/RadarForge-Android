@@ -144,149 +144,8 @@ object Sheets {
     }
 
     // ------------------------------------------------------------------ layers
-    /** Keeps the quick-switch chips and the switch rows of one sheet showing the same thing. */
-    private class Sync {
-        private val views = HashMap<String, MutableList<(Boolean) -> Unit>>()
-        var busy = false
-        fun on(key: String, update: (Boolean) -> Unit) { views.getOrPut(key) { ArrayList() }.add(update) }
-        fun changed(key: String, value: Boolean) {
-            busy = true
-            try { views[key]?.forEach { it(value) } } finally { busy = false }
-        }
-    }
-
-    /** A switch row tied to [key] in [sync]. */
-    @android.annotation.SuppressLint("UseSwitchCompatOrMaterialCode")
-    private fun syncedSwitch(a: MainActivity, sync: Sync, key: String, label: String, desc: String?,
-                             get: () -> Boolean, set: (Boolean) -> Unit): View {
-        val row = W.switchRow(a, label, desc, get()) { on ->
-            if (sync.busy) return@switchRow
-            set(on)
-            sync.changed(key, on)
-        } as ViewGroup
-        val sw = row.getChildAt(row.childCount - 1) as android.widget.Switch
-        sync.on(key) { v -> if (sw.isChecked != v) sw.isChecked = v }
-        return row
-    }
-
-    /** One-tap switches for everything on the map (the desktop app's Quick panel), in three groups. */
-    private fun quickSwitches(a: MainActivity, col: LinearLayout, sync: Sync) {
-        val p = a.prefs
-        col.addView(W.section(a, "Quick switches"))
-        var grid = ChipGrid(a)
-        fun group(title: String, first: Boolean = false) {
-            if (!first) col.addView(grid, lp(top = a.dpi(2f)))
-            col.addView(W.text(a, title, 13f, C.dim), lp(top = a.dpi(if (first) 0f else 8f)))
-            grid = ChipGrid(a)
-        }
-        fun sw(label: String, key: String, isOn: () -> Boolean, set: (Boolean) -> Unit) {
-            val chip = W.chip(a, label, isOn()) { c ->
-                set(!isOn())
-                c.selectedState = isOn()
-                sync.changed(key, isOn())
-            }.apply { asTile() }
-            sync.on(key) { v -> chip.selectedState = v }
-            grid.addView(chip)
-        }
-        fun layer(label: String, key: String) = sw(label, "layer:$key", { p.layer(key) }) { p.setLayer(key, it); a.layersChanged() }
-        group("Warnings & storms", first = true)
-        layer("Warnings", "warnings")
-        sw("Watches", "warn:watch", { p.warnGroup("watch") }) { p.setWarnGroup("watch", it); a.rebuildAlerts(); a.rebuild() }
-        layer("Storm reports", "reports")
-        layer("Storm chasers", "chasers")
-        layer("Severe outlook", "outlook")
-        layer("Discussions", "mcd")
-        group("Radar display")
-        sw("Colour bars", "legend", { p.showLegend }) { p.showLegend = it; a.settingsChanged() }
-        sw("Smoothing", "smooth", { p.smooth }) { p.smooth = it; a.displayChanged() }
-        sw("Dealiasing", "dealias", { p.dealias }) { p.dealias = it; a.displayChanged() }
-        sw("Σ Max trail", "trail", { p.trail }) { p.trail = it; a.requestLoopFrames(); a.displayChanged() }
-        sw("Learn mode", "learn", { p.learn }) { on ->
-            p.learn = on; a.displayChanged()
-            if (on) a.toast("Press and hold the map to see what the colours mean")
-        }
-        group("Map")
-        layer("Counties", "counties")
-        layer("Highways", "roads")
-        layer("Cities", "cities")
-        layer("Range rings", "rings")
-        layer("Radar sites", "sites")
-        col.addView(grid, lp(top = a.dpi(2f)))
-        col.addView(W.note(a, "Discussions are the SPC's mesoscale discussions. Dealiasing unfolds aliased velocity (BV, SRV). Σ Max trail shows the strongest value at each spot over the loaded scans – hail swaths and rotation tracks. Learn mode explains the values when you press and hold."), lp(top = a.dpi(6f)))
-    }
-
-    fun layers(a: MainActivity) {
-        val p = a.prefs
-        val col = W.vCol(a)
-        val sync = Sync()
-        quickSwitches(a, col, sync)
-        fun layer(key: String, label: String, desc: String?) =
-            col.addView(syncedSwitch(a, sync, "layer:$key", label, desc, { p.layer(key) }) { on -> p.setLayer(key, on); a.layersChanged() })
-        col.addView(W.section(a, "Warnings"))
-        layer("warnings", "NWS warnings", "Outlines from the National Weather Service, updated every 90 seconds. Earlier scans in the loop show the warnings of their own time.")
-        for ((key, label) in listOf("tornado" to "Tornado", "severe" to "Severe thunderstorm", "flood" to "Flash flood",
-            "watch" to "Watches", "other" to "Other (extreme wind, marine, snow squall, dust storm, special statements)")) {
-            col.addView(syncedSwitch(a, sync, "warn:$key", label, null, { p.warnGroup(key) }) { on -> p.setWarnGroup(key, on); a.rebuildAlerts(); a.rebuild() })
-        }
-        col.addView(W.listRow(a, "Warning lines", "Colours (classic or NWS), width, style and the flash for new warnings", "›") { warningLines(a) }, lp())
-
-        col.addView(W.section(a, "Storm reports"))
-        layer("reports", "Storm reports", "NWS local storm reports, plus Spotter Network reports: tornado, hail, wind, flooding. Tap one to read it.")
-        col.addView(W.text(a, "Show the last", 14f, C.dim), lp(top = a.dpi(4f)))
-        col.addView(W.segmented(a, Prefs.REPORT_HOURS.map { "$it" to "$it h" }, "${p.reportHours}") {
-            p.reportHours = it.toInt(); a.applyFeedPrefs(); a.dm.refreshFeed("reports"); a.rebuildFeeds()
-        })
-        val groups = W.hRow(a)
-        for ((g, label) in ReportKind.GROUPS) {
-            groups.addView(W.chip(a, label, p.reportGroup(g)) { c ->
-                val on = !p.reportGroup(g)
-                p.setReportGroup(g, on)
-                c.selectedState = on
-                a.rebuildFeeds()
-            }, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = a.dpi(6f) })
-        }
-        col.addView(android.widget.HorizontalScrollView(a).apply { isHorizontalScrollBarEnabled = false; addView(groups) }, lp(top = a.dpi(4f)))
-        col.addView(W.switchRow(a, "Include Spotter Network reports", "Sent in by trained spotters, often before the NWS posts them", p.spotterReports) {
-            p.spotterReports = it; a.applyFeedPrefs(); a.dm.refreshFeed("reports"); a.rebuildFeeds()
-        })
-        col.addView(W.listRow(a, "List of storm reports", "Newest first, near this radar", "›") { reportList(a, a.visibleReports, "Storm reports") }, lp())
-
-        col.addView(W.section(a, "Storm chasers"))
-        layer("chasers", "Storm chasers", "Live positions from Spotter Network, updated every minute. Arrows point the way they're driving; colour shows how fresh the position is.")
-        col.addView(W.segmented(a, listOf("all" to "Everyone", "active" to "Active reporters"), if (p.chasersActiveOnly) "active" else "all") {
-            p.chasersActiveOnly = it == "active"; a.applyFeedPrefs(); a.dm.refreshFeed("chasers")
-        })
-        col.addView(W.note(a, "Active reporters: members with at least 5 accepted reports in the last 12 months. Cyan: updated in the last 15 minutes, amber: within the hour, grey: older."))
-        col.addView(W.switchRow(a, "Show names", "When zoomed in", p.chaserNames) { p.chaserNames = it; a.rebuildFeeds() })
-
-        col.addView(W.section(a, "Storm Prediction Center"))
-        layer("outlook", "Severe weather outlook", "Risk areas: TSTM, MRGL, SLGT, ENH, MDT, HIGH. Tap inside one for the chances there.")
-        col.addView(W.segmented(a, listOf("1" to "Today (day 1)", "2" to "Day 2", "3" to "Day 3"), "${p.outlookDay}") {
-            p.outlookDay = it.toInt(); a.applyFeedPrefs(); a.rebuildSpc(); a.rebuild()
-        })
-        layer("mcd", "Mesoscale discussions", "Blue outlines – tap one to read it")
-
-        col.addView(W.section(a, "Radar display"))
-        col.addView(syncedSwitch(a, sync, "legend", "Colour bars", "The colour scale along the edge of each panel", { p.showLegend }) { on -> p.showLegend = on; a.settingsChanged() })
-        col.addView(syncedSwitch(a, sync, "smooth", "Smooth radar", "Blend neighbouring gates instead of showing them as blocks", { p.smooth }) { on ->
-            p.smooth = on; a.displayChanged()
-        })
-        col.addView(syncedSwitch(a, sync, "dealias", "Dealias velocity", "Unfold aliased velocity, so strong winds don't flip colour (BV and SRV)", { p.dealias }) { on ->
-            p.dealias = on; a.displayChanged()
-        })
-        col.addView(syncedSwitch(a, sync, "trail", "Σ Max-value trail", "Each panel shows the strongest value seen at every spot over the loaded scans (CC: the lowest)", { p.trail }) { on ->
-            p.trail = on; a.requestLoopFrames(); a.displayChanged()
-        })
-        col.addView(W.listRow(a, "Colour tables", "WxVortex, Enhanced and Heatseaker by default, or import your own .pal files", "›") { colorTables(a) }, lp())
-
-        col.addView(W.section(a, "Map"))
-        layer("counties", "Counties", null)
-        layer("roads", "Highways", null)
-        layer("cities", "Cities", null)
-        layer("rings", "Range rings", "Every 50 ${p.distUnits} around the radar")
-        layer("sites", "Radar sites", "Tap one on the map to switch to it")
-        a.sheets.show("Map layers", col, fullHeight = true)
-    }
+    /** The Layers sheet (presets and grouped switches) lives in SheetsWx. */
+    fun layers(a: MainActivity) = SheetsWx.layers(a)
 
     // ------------------------------------------------------------------ warnings
     fun warnings(a: MainActivity) {
@@ -388,6 +247,9 @@ object Sheets {
         val p = a.prefs
         val col = W.vCol(a)
         col.addView(W.listRow(a, "Getting started", "A quick tour of RadarForge", "›") { welcome(a) }, lp())
+        col.addView(W.listRow(a, "Share a picture of the map", "The map as it looks now, with the time and a caption", null) {
+            a.sheets.close(); a.shareScreenshot()
+        }, lp())
 
         col.addView(W.section(a, "Look & colours"))
         val accentName = Themes.ACCENTS.firstOrNull { it.first == p.accent }?.second ?: "Custom"
@@ -579,7 +441,7 @@ object Sheets {
     // ------------------------------------------------------------------ radar guide
     fun radarGuide(a: MainActivity) {
         val col = W.vCol(a)
-        col.addView(W.note(a, "Press and hold the map with learn mode on (Map layers → Quick switches) to get these explanations for the exact spot under your finger."))
+        col.addView(W.note(a, "Press and hold the map with learn mode on (Layers → Radar display) to get these explanations for the exact spot under your finger."))
         col.addView(W.section(a, "Products"))
         for (pr in Product.entries) {
             val text = Learn.PRODUCT_HELP[pr] ?: continue
@@ -1078,20 +940,16 @@ object Sheets {
         a.prefs.seenWhatsNew = MainActivity.WHATS_NEW
         val col = W.vCol(a)
         checkList(a, col, listOf(
-            "Updates from inside the app: RadarForge looks for a new version about once a day and offers it – one tap downloads and installs it (Settings → Updates).",
-            "New default colour tables: WxVortex reflectivity, Enhanced velocity and Heatseaker correlation coefficient. Tables you imported are kept.",
-            "Classic warning colours: red tornado, magenta confirmed or PDS tornado, yellow severe thunderstorm, green flash flood. Warning lines → NWS colours switches back.",
-            "Going back through the loop shows the warnings that were in force at each scan, with their polygons as they were then.",
-            "New warnings flash on the map for a few seconds when they're issued or upgraded.",
-            "Tidier menus: quick switches in groups, warnings and storm data at the top of Map layers, and Getting started in Settings.",
+            "Models: HRRR, NAM 3 km, RAP and GFS maps, like Pivotal Weather – CAPE, helicity, shear, STP, simulated radar, temperature, wind, precipitation, snow and more. Tap Models at the top.",
+            "Winter: precipitation type on the radar (P-Type), the freezing line, snowfall totals, winter storm warnings shaded by county, and snow totals on storm reports.",
+            "Hurricanes: active storms with their cone, track, wind field and coastal warnings, when the winds could reach you, model tracks, the tropical outlook, buoys, rainfall totals, past storms and the storms that passed near you.",
+            "Presets in Layers: Severe, Winter, Tropical or Clean set up the map in one tap. Layers are grouped, and groups fold away.",
+            "Share a picture of the map has moved to Settings.",
         ))
-        col.addView(W.section(a, "Your location"))
-        col.addView(W.switchRow(a, "Keep my location up to date", "While the app is open. Needed to be alerted when a new warning covers where you are (Settings → My location).", a.prefs.liveLocation) {
-            a.prefs.liveLocation = it
-            if (it && !a.hasLocationPermission()) a.requestLocationPermission()
-            a.stopLiveLocation(); a.startLiveLocation()        // starts again only if wanted (or following)
-        })
-        col.addView(W.button(a, "Got it", primary = true) { a.sheets.close() }, lp(top = a.dpi(14f)))
+        val buttons = W.hRow(a)
+        buttons.addView(W.button(a, "Try Models") { a.sheets.close(); a.setViewMode("models") }, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = a.dpi(8f) })
+        buttons.addView(W.button(a, "Got it", primary = true) { a.sheets.close() }, LinearLayout.LayoutParams(0, -2, 1f))
+        col.addView(buttons, lp(top = a.dpi(14f)))
         a.sheets.show("New in RadarForge ${MainActivity.WHATS_NEW}", col)
     }
 
@@ -1100,14 +958,14 @@ object Sheets {
         a.prefs.seenWelcome = true
         a.prefs.seenWhatsNew = MainActivity.WHATS_NEW
         val col = W.vCol(a)
-        col.addView(W.note(a, "Live NEXRAD radar, tilt by tilt as the radar scans. Six things to know, then you're set."))
+        col.addView(W.note(a, "Live NEXRAD radar and forecast models. Six things to know, then you're set."))
         val steps = listOf(
             "Pick a radar" to "Tap the radar name at the top, or a green square on the map. Live data starts straight away and keeps itself up to date.",
             "Move around" to "Drag to move, pinch to zoom, double-tap to zoom in, two-finger tap to zoom out. Press and hold to read the value under your finger.",
-            "Products and panels" to "Pick a product along the bottom (reflectivity, velocity, correlation coefficient…); the arrows change the tilt. The panel button shows 2 or 4 linked panels.",
-            "Warnings" to "Coloured outlines are NWS warnings: red tornado, magenta confirmed or PDS tornado, yellow severe thunderstorm, green flash flood. New ones flash for a few seconds. Tap one to read it.",
-            "The loop" to "Play loops the previous scans (they load as soon as you pick a radar); ◀ ▶ step through them. Each scan shows the warnings of its own time.",
-            "Everything else" to "Map layers has one-tap switches for warnings, storm reports, chasers, SPC outlooks and the map. The ruler measures distances and tracks storms. Settings has themes, colour tables, updates and this guide.",
+            "Products and panels" to "Pick a product along the bottom (reflectivity, velocity, P-Type…); the arrows change the tilt. The panel button shows 2 or 4 linked panels. Play loops the previous scans.",
+            "Warnings" to "Coloured outlines are NWS warnings: red tornado, magenta confirmed or PDS tornado, yellow severe thunderstorm, green flash flood. Winter and tropical warnings shade whole counties. Tap one to read it.",
+            "Layers and presets" to "The Layers button: one tap on Severe, Winter, Tropical or Clean sets up the map for that weather. Below are the switches, in groups that fold away.",
+            "Models" to "Tap Models at the top for forecast maps (HRRR, NAM, RAP, GFS): pick a field, step through the hours with ◀ ▶, or play. Radar takes you back.",
         )
         for ((i, step) in steps.withIndex()) {
             val row = W.hRow(a).apply { setPadding(0, a.dpi(6f), 0, a.dpi(6f)) }
@@ -1128,6 +986,8 @@ object Sheets {
         })
         val buttons = W.hRow(a)
         buttons.addView(W.button(a, "Choose a radar") { sites(a) },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = a.dpi(8f) })
+        buttons.addView(W.button(a, "Layers") { SheetsWx.layers(a) },
             LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = a.dpi(8f) })
         buttons.addView(W.button(a, "Start", primary = true) { a.sheets.close() }, LinearLayout.LayoutParams(0, -2, 1f))
         col.addView(buttons, lp(top = a.dpi(14f)))

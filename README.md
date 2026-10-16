@@ -46,7 +46,18 @@ the newer `.apk` and install it over the old one. Your settings are kept either 
   background (0–20, your choice), so the loop plays instantly. ◀ ▶ step one scan at a time. Only the start
   of each older file is downloaded (just enough for the tilt on screen – about 2–3 MB per scan at the lowest
   tilt). On mobile data they load for the lowest tilts only, or not at all if you prefer (Settings → Loop).
-- **Quick switches**: every layer and radar option as one-tap buttons at the top of Map layers.
+- **Models (Pivotal-style):** HRRR, NAM 3 km, RAP and GFS forecast maps – 30 severe, surface, upper-air and
+  winter fields (CAPE, helicity, shear, STP, simulated radar, temperature, wind, precipitation, snow…) with
+  contours, wind barbs and colour bars, in 1, 2 or 4 panels. Step or play through the forecast hours; pick the
+  run and area. Only the fields on screen are downloaded, straight from NOAA.
+- **Winter:** precipitation type on the radar (P-Type, from the HRRR), the freezing line, NOHRSC snowfall
+  totals (24/48/72 h), a winter reflectivity colour table, winter warnings shaded by county, and snow totals
+  on storm reports.
+- **Hurricanes:** NHC storms with cone, track, wind field and coastal warnings; when a storm's winds would
+  reach you; model tracks; the tropical outlook; buoys; MRMS rainfall totals; past storms and storms that
+  passed near you.
+- **Layers with presets:** Severe, Winter, Tropical and Clean set up the map in one tap; the switches below
+  are grouped and fold away.
 - **Dealias velocity**: unfolds aliased velocity (BV and SRV) with the same region-based method as the
   desktop app, so strong winds and tight couplets don't flip colour.
 - **Σ max-value trail**: each panel shows the strongest value seen at every spot over the loaded scans –
@@ -92,18 +103,21 @@ the newer `.apk` and install it over the old one. Your settings are kept either 
 | Change radar | Tap the radar name at the top, or tap a green square on the map. ☆ keeps a radar at the top of the list |
 | Move / zoom | Drag; pinch; double-tap to zoom in; two-finger tap to zoom out |
 | Read a value | Press and hold the map (drag to move the cross-hair, tap to hide it) |
-| Change product | Tap a product along the bottom (BR, BV, SRV, CC, ZDR, SW, PHI) |
+| Change product | Tap a product along the bottom (BR, BV, SRV, CC, ZDR, SW, PHI, P-Type) |
+| Models | **Models** at the top: pick a field along the bottom (or **All fields**), ◀ ▶ step the hours, ▶ plays, the model chip changes model / run / area. **Radar** goes back |
+| Presets | Layers → **Severe**, **Winter**, **Tropical** or **Clean** |
+| Hurricanes | Layers → Tropical; tap a storm for details and arrival times; **Storms, past storms and history** for past tracks |
 | Change tilt | The arrows at the bottom left, or tap the tilt to pick from the list |
 | 2 or 4 panels | The panel button; tap a panel to choose its product |
 | Loop | ▶ at the bottom plays the previous scans (already loaded); ◀ ▶ step one scan, drag the slider to scrub, ✕ to stop |
 | Warnings | The ⚠ button at the top (the number counts warnings near the radar) |
-| Map layers | The layers button at the top: quick switches for everything, then map, warnings, storm reports, storm chasers, SPC outlook (day 1–3) |
-| Dealias / Σ trail / learn mode | Map layers → Quick switches |
+| Layers | The layers button at the top: presets, then warnings & watches, storm reports & chasers, SPC, winter, tropical, radar display, map |
+| Dealias / Σ trail / learn mode | Layers → Radar display |
 | Theme | Settings → Theme (or press and hold the settings button) |
 | Reload | Radar list → **Reload**, or Settings → Reload radar data |
 | Measure | The ruler button: **Distance** (tap points, drag to move them) or **Storm track** (tap a storm, drag the arrowhead) |
 | Follow me | The location button centres the map on you and follows you; tap it again or drag the map to stop |
-| Share | The share button at the top sends a picture of the map |
+| Share | Settings → Share a picture of the map |
 | Settings | The sliders button: theme, units, storm motion for SRV, previous scans and loop speed, learn mode and the radar guide, my location, colour tables, warning lines |
 
 **Storm-relative velocity** uses the storm motion set under Settings (default: from 240° at 30 kt).
@@ -158,7 +172,10 @@ RadarForge-Android/
 │   ├── AndroidManifest.xml
 │   ├── src/com/libexil/radarforge/
 │   │   ├── MainActivity.kt   main screen, panels, loop, location, colour table import
-│   │   ├── Sheets.kt         radar picker, layers, settings, warnings, reports, chasers, SPC, about
+│   │   ├── Sheets.kt         radar picker, settings, warnings, reports, chasers, SPC, about
+│   │   ├── SheetsWx.kt       Layers (presets), Models, Tropical, storm details
+│   │   ├── ModelsMode.kt     the Models view: runs, pictures, panels, the forecast-hour bar
+│   │   ├── WeatherLayers.kt  freezing line, snowfall / rainfall, county-shaded alerts, hurricanes on the map
 │   │   ├── ShotProvider.kt   hands the shared map picture to other apps
 │   │   ├── Updater.kt        in-app updates: GitHub release check, download, package installer
 │   │   ├── core/             radar decoding & products – plain Kotlin, tested on the JVM
@@ -166,7 +183,12 @@ RadarForge-Android/
 │   │   │   ├── Level2.kt         NEXRAD Level II (message 31 / 1, archive files, live chunks)
 │   │   │   ├── Products.kt       products, tilts, storm-relative velocity
 │   │   │   ├── ColorTable.kt     GRLevelX .pal colour tables
-│   │   │   ├── Alerts.kt         NWS warnings
+│   │   │   ├── Alerts.kt         NWS warnings (winter and tropical ones by county)
+│   │   │   ├── Grib2.kt          GRIB2 decoder (Lambert / lat-lon; simple, complex, spatial-differencing, PNG)
+│   │   │   ├── Models.kt         HRRR / NAM / RAP / GFS: index files, byte ranges, the 30 fields
+│   │   │   ├── MapRaster.kt      fields onto the map: resampling, colours, contours, barbs
+│   │   │   ├── Winter.kt         precipitation type, freezing line, NOHRSC snowfall, MRMS rainfall
+│   │   │   ├── Tropical.kt       NHC storms, cone / track / winds, a-decks, HURDAT2, arrival times, buoys
 │   │   │   ├── Reports.kt        storm reports (IEM local storm reports, Spotter Network)
 │   │   │   ├── Chasers.kt        Spotter Network positions (via Placefile.kt)
 │   │   │   ├── Spc.kt            SPC day 1–3 outlooks and mesoscale discussions
@@ -198,7 +220,9 @@ Radar data: NOAA NEXRAD Level II on AWS (Unidata real-time chunks and archive). 
 Weather Service API. Storm reports, SPC outlooks and mesoscale discussions: NWS and the Storm
 Prediction Center via the [Iowa Environmental Mesonet](https://mesonet.agron.iastate.edu/). Storm
 chaser positions and spotter reports: [Spotter Network](https://www.spotternetwork.org/) (non-commercial
-use). Map data: US Census Bureau, Natural Earth, GeoNames. Radar site list derived from Supercell Wx.
+use). Models: NOAA HRRR, NAM, RAP and GFS on AWS. Snowfall: NOHRSC. Rainfall: NOAA MRMS. Hurricanes: the
+National Hurricane Center (storms, outlook, ATCF, HURDAT2) and NDBC buoys. Map data: US Census Bureau,
+Natural Earth, GeoNames. Radar site list derived from Supercell Wx.
 
 ## License
 

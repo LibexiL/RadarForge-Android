@@ -3,6 +3,7 @@ package com.libexil.radarforge.gl
 import com.libexil.radarforge.core.ColorTable
 import com.libexil.radarforge.core.Field
 import com.libexil.radarforge.core.ProjectedLayer
+import com.libexil.radarforge.core.Raster
 
 /** A map layer to draw: lines in km around the radar, colour 0xAARRGGBB, width in px. */
 class LayerDraw(
@@ -14,7 +15,14 @@ class LayerDraw(
     val innerPx: Float = 0f,                    // black centre stripe ("center" / "double" warning lines)
 )
 
-class PanelDraw(val field: Field?, val table: ColorTable, val smooth: Boolean)
+/**
+ * One panel: [rasters] (model fields, rainfall / snowfall totals) go under the radar [field];
+ * [lines] (model contours) above the map outlines.
+ */
+class PanelDraw(
+    val field: Field?, val table: ColorTable, val smooth: Boolean,
+    val rasters: List<Raster> = emptyList(), val lines: List<LayerDraw> = emptyList(),
+)
 
 /** Everything the renderer needs for one frame; replaced as a whole from the UI thread. */
 class Scene(

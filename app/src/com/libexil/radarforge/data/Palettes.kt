@@ -16,9 +16,10 @@ class Palettes(private val ctx: Context, private val prefs: Prefs) {
         ColorTable.parse(text, "RadarForge $family").also { it.source = "built-in" }
     }
 
-    /** The table in use for a palette family. */
+    /** The table in use for a palette family (Winter colours swap the built-in reflectivity table). */
     fun table(family: String): ColorTable {
         val file = prefs.palette(family)
+        if (family == "REF" && file.isEmpty() && prefs.winterColors) return builtin("REF_Winter")
         if (file.isNotEmpty()) {
             cache["file:$file"]?.let { return it }
             val f = File(dir, file)

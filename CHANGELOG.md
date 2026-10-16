@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.7.0 – 2026-10-15
+
+* **Models.** Tap **Models** at the top for forecast maps from the HRRR, NAM 3 km, RAP and GFS, like
+  Pivotal Weather's. They come straight from NOAA, downloading only the fields you look at.
+  * **30 fields in four groups:**
+    * **Severe:** simulated radar, CAPE (surface, mixed-layer, most-unstable), CIN, 0–1 and 0–3 km
+      helicity, 0–6 km shear, STP, the supercell composite, updraft helicity, lapse rates and the
+      lifted index.
+    * **Surface:** temperature, dewpoint, humidity, wind, gusts, radar with isobars, precipitable water.
+    * **Upper air:** 500 mb heights and vorticity, 850 mb temperature, the 250 mb jet.
+    * **Precipitation & winter:** total precipitation, precipitation type, snowfall (10:1 and the
+      model's own), freezing rain, snow depth.
+  * **Contours, barbs and labels:** height and pressure lines, wind barbs, the 32 °F / 0 °C line, and
+    a stepped colour bar.
+  * **Panels:** 1, 2 or 4, each with its own field.
+  * **Moving through the forecast:** ◀ ▶ step the forecast hours, the slider scrubs, and ▶ plays the
+    forecast.
+  * **The model chip:** changes the model, the run and the area (the whole US, 12 regions, or the
+    Atlantic tropics with the GFS).
+  * **Reading values:** press and hold to read a value.
+* **Winter:**
+  * **P-Type:** reflectivity coloured by precipitation type – rain, snow, sleet or freezing rain –
+    using the HRRR's analysis for the hour of the scan.
+  * **Freezing line:** the 32 °F line for the hour of the scan.
+  * **Snowfall totals:** NOHRSC's 24, 48 or 72-hour analysis.
+  * **Winter colours:** a reflectivity colour table for light snow.
+  * **Winter warnings shaded by county:** winter storm, blizzard, ice storm, lake-effect snow,
+    advisories, extreme cold, freeze and frost.
+  * **Snow, sleet, ice and blizzard reports**, with snow totals beside them.
+  * **Learn mode** says what's falling, and the temperature.
+* **Hurricanes:**
+  * **Active storms** from the National Hurricane Center: forecast cone and track, the wind field now,
+    and the coastal hurricane / tropical storm watches and warnings.
+  * **Tap a storm** for its details, the forecast, the NHC's links, and **when it could reach you**:
+    closest approach, and when tropical-storm and hurricane-force winds arrive and leave.
+  * **Model tracks** (GFS, European, HAFS, Canadian, UK, consensus), the **tropical outlook**,
+    **buoys**, and **rainfall totals** (MRMS, 24 / 48 / 72 h).
+  * **Hurricane, tropical storm and storm surge warnings**, shaded by county.
+  * **Past storms:** the best track of any Atlantic or east Pacific storm since 1950, this season
+    included.
+  * **History:** every storm that passed within 100 miles of you, or of the map centre.
+* **Layers, reorganised:**
+  * **Presets:** one tap sets up the map for **Severe**, **Winter**, **Tropical** or a **Clean** map.
+  * **Groups:** the switches are grouped as warnings & watches, storm reports & chasers, SPC, winter,
+    tropical, radar display and map, and each group folds away.
+* **Easier to learn:** Getting started and What's new are rewritten, and short tips appear the first
+  time you open the Models view or P-Type.
+* **Share a picture of the map** has moved to Settings, to make room for the Radar | Models switch.
+
 ## 1.6.0 – 2026-10-14
 
 * **Updates from inside the app.** RadarForge looks for a new version on GitHub about once a day and

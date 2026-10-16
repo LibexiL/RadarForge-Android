@@ -18,6 +18,7 @@ import com.libexil.radarforge.core.Chaser
 import com.libexil.radarforge.core.ColorTable
 import com.libexil.radarforge.core.Field
 import com.libexil.radarforge.core.Geo
+import com.libexil.radarforge.core.MapRaster
 import com.libexil.radarforge.core.Measure
 import com.libexil.radarforge.core.MesoDiscussion
 import com.libexil.radarforge.core.Product
@@ -70,7 +71,32 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         val title: String,          // "KTLX  BR 0.5°"
         val subtitle: String,       // "19:42:10Z · 3 min ago"
         val note: String?,          // e.g. "previous volume" / "loading…"
+        /** Model maps: a stepped legend instead of the colour table's. */
+        val legend: Legend? = null,
+        /** Model maps: what the inspector says at a point (replaces the radar readout). */
+        val readout: ((FloatArray) -> List<String>)? = null,
+        /** Model maps: wind barbs as x, y (km), u, v (kts) per barb, drawn with north corrected for [barbProj]. */
+        val barbs: FloatArray? = null,
+        val barbProj: Geo.Aeqd? = null,
+        /** Model maps: contour labels (km positions). */
+        val labels: List<MapLabel> = emptyList(),
     )
+
+    /** A legend of coloured steps: [stops] value -> colour; [names] labels whole sections (precipitation type). */
+    class Legend(val stops: List<Pair<Float, Int>>, val units: String, val names: List<Pair<Int, String>>? = null, val decimals: Int = 0)
+
+    /** Extra things drawn on the map (tropical storms, winter / tropical warning areas). */
+    interface Decor {
+        /** Drawn under the labels ([below]) or above the markers. */
+        val below: Boolean get() = false
+        fun draw(c: Canvas, r: RectF, state: MapState, density: Float)
+        /** A tap at [km]; true if handled. */
+        fun tap(km: FloatArray, r: RectF, state: MapState, density: Float): Boolean = false
+    }
+
+    var decor: List<Decor> = emptyList()
+    /** More inspector lines for the radar map (snowfall / rainfall totals at the spot). */
+    var extraReadout: ((FloatArray) -> List<String>)? = null
 
     var callbacks: Callbacks? = null
     var panels: List<PanelInfo> = emptyList()
@@ -240,6 +266,11 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
                 return true
             }
             if (tapMarkers(i, e.x, e.y)) return true
+            run {
+                val km = state.toKm(i, e.x, e.y)
+                val r = state.panelRects().getOrNull(i) ?: return@run
+                for (d in decor.asReversed()) if (d.tap(km, r, state, density)) return true
+            }
             if (tapSite(i, e.x, e.y)) return true
             if (tapAlerts(i, e.x, e.y)) return true
             if (state.panelCount > 1 && i != state.activePanel) {
@@ -588,12 +619,19 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
             c.save()
             c.clipRect(r)
             occupied.clear()
+            for (d in decor) if (d.below) d.draw(c, r, state, density)
+            val info0 = panels.getOrNull(i)
+            if (info0 != null) {
+                info0.barbs?.let { drawBarbs(c, r, it, info0.barbProj) }
+                if (info0.labels.isNotEmpty()) drawContourLabels(c, r, info0.labels)
+            }
             if (showSites) drawSites(c, r)
             if (showCities) drawCities(c, r)
             drawOutlookLabels(c, r)
             drawMcdLabels(c, r)
             drawReports(c, r)
             drawChasers(c, r)
+            for (d in decor) if (!d.below) d.draw(c, r, state, density)
             drawLocation(c, r)
             when (tool) {
                 Tool.DISTANCE -> drawRuler(c, r)
@@ -603,7 +641,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
             val info = panels.getOrNull(i)
             if (info != null) {
                 drawHeader(c, r, info)
-                if (showLegend) drawLegend(c, r, info)
+                if (showLegend) { if (info.legend != null) drawStepLegend(c, r, info.legend) else drawLegend(c, r, info) }
                 inspectKm?.let { drawInspector(c, r, info, it) }
             }
             c.restore()
@@ -762,6 +800,13 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
                 markerText.textSize = (if (two) 8.5f else 11f) * sp
                 markerText.alpha = (a * 255).toInt()
                 c.drawText(rep.kind.letter, x, y - (markerText.descent() + markerText.ascent()) / 2, markerText)
+            }
+            // snow totals next to snow reports
+            rep.snowInches?.let { inch ->
+                if (state.viewWidthKm() < 2500) {
+                    val t = (if (inch >= 10 || inch == Math.floor(inch)) String.format(Locale.US, "%.0f", inch) else String.format(Locale.US, "%.1f", inch)) + "\""
+                    haloText(c, t, x + rad + 3f * density, y + smallLabel.textSize * 0.36f, rep.kind.color)
+                }
             }
         }
     }
@@ -967,8 +1012,14 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         fill.isFilterBitmap = true
         c.drawBitmap(bmp, null, bar, fill)
         val lo = ct.vmin; val hi = ct.vmax
-        val stops = ct.legendStops(((bar.width() / (34 * density)).toInt()).coerceIn(3, 14))
         val ty = bar.top - 4 * density
+        if (ct.labels.isNotEmpty()) {
+            // a categorical table (precipitation type): name each section
+            for ((v, name) in ct.labels) c.drawText(name, bar.left + (v - lo) / (hi - lo) * bar.width(), ty, legendText)
+            occupied.add(RectF(box))
+            return
+        }
+        val stops = ct.legendStops(((bar.width() / (34 * density)).toInt()).coerceIn(3, 14))
         var lastX = -1e9f
         for (v in stops) {
             val x = bar.left + (v - lo) / (hi - lo) * bar.width()
@@ -989,7 +1040,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
     private fun legendUnits(p: PanelInfo): String {
         val u = p.table.units.trim()
         if (u.isNotEmpty()) return u.uppercase(Locale.US).let { if (it == "DBZ") "dBZ" else if (it == "DB") "dB" else it }
-        return when (p.product) { Product.REF -> "dBZ"; Product.ZDR -> "dB"; Product.PHI -> "°"; else -> "" }
+        return when (p.product) { Product.REF, Product.PTYPE -> "dBZ"; Product.ZDR -> "dB"; Product.PHI -> "°"; else -> "" }
     }
 
     private fun fmtLegend(v: Float, ct: ColorTable): String {
@@ -998,6 +1049,150 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
             span <= 2f -> String.format(Locale.US, "%.2f", v).trimEnd('0').trimEnd('.')
             span <= 20f && v != v.toInt().toFloat() -> String.format(Locale.US, "%.1f", v)
             else -> v.toInt().toString()
+        }
+    }
+
+    /** Model legend: equal-width steps, one per colour stop, labelled at the stops. */
+    private fun drawStepLegend(c: Canvas, r: RectF, lg: Legend) {
+        val margin = 8f * density
+        val barH = 9f * density
+        val labelH = legendText.textSize + 4 * density
+        val box = RectF(r.left + margin, r.bottom - margin - barH - labelH - 6 * density, r.right - margin, r.bottom - margin)
+        if (box.width() < 120 * density || lg.stops.size < 2) return
+        fill.color = C.labelBg
+        c.drawRoundRect(box, 7 * density, 7 * density, fill)
+        val unit = lg.units
+        val unitW = if (unit.isNotEmpty() && lg.names == null) legendText.measureText(unit) + 10 * density else 0f
+        val bar = RectF(box.left + 8 * density, box.bottom - 5 * density - barH, box.right - 8 * density - unitW, box.bottom - 5 * density)
+        val n = lg.stops.size
+        val ty = bar.top - 4 * density
+        if (lg.names != null) {
+            // whole sections (rain / snow / sleet / freezing rain), each a gradient of its own stops
+            val sections = lg.names.size
+            val sw = bar.width() / sections
+            for ((k, nm) in lg.names.withIndex()) {
+                val lo = nm.first.toFloat(); val hi = lo + 99f
+                val inSec = lg.stops.filter { it.first >= lo && it.first < hi }
+                for ((j, st) in inSec.withIndex()) {
+                    fill.color = st.second or 0xff000000.toInt()
+                    c.drawRect(bar.left + k * sw + j * sw / inSec.size, bar.top, bar.left + k * sw + (j + 1) * sw / inSec.size + 0.5f, bar.bottom, fill)
+                }
+                c.drawText(nm.second, bar.left + (k + 0.5f) * sw, ty, legendText)
+            }
+            occupied.add(RectF(box))
+            return
+        }
+        val sw = bar.width() / (n - 1)
+        for (k in 0 until n - 1) {
+            val col = lg.stops[k].second
+            fill.color = blendOverMap(col)
+            c.drawRect(bar.left + k * sw, bar.top, bar.left + (k + 1) * sw + 0.5f, bar.bottom, fill)
+        }
+        var lastX = -1e9f
+        for (k in 0 until n) {
+            val x = bar.left + k * sw
+            val v = lg.stops[k].first
+            val label = if (lg.decimals > 0 && v != v.toInt().toFloat()) String.format(Locale.US, "%.${lg.decimals}f", v).trimEnd('0').trimEnd('.')
+                else v.toInt().toString()
+            val lw = legendText.measureText(label)
+            if (x - lw / 2 < lastX + 3 * density || x + lw / 2 > bar.right + 10 * density) continue
+            c.drawText(label, x, ty, legendText)
+            lastX = x + lw / 2
+        }
+        if (unit.isNotEmpty()) {
+            legendText.textAlign = Paint.Align.LEFT
+            c.drawText(unit, bar.right + 6 * density, bar.bottom, legendText)
+            legendText.textAlign = Paint.Align.CENTER
+        }
+        occupied.add(RectF(box))
+    }
+
+    private fun blendOverMap(col: Int): Int {
+        val a = (col ushr 24) and 0xff
+        val bg = C.mapBg
+        fun ch(s: Int) = (((col shr s) and 0xff) * a + ((bg shr s) and 0xff) * (255 - a)) / 255
+        return (0xff shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+    }
+
+    private fun drawContourLabels(c: Canvas, r: RectF, labels: List<MapLabel>) {
+        if (state.viewWidthKm() > 6000) return
+        val minGap = 70f * density
+        val placed = ArrayList<FloatArray>()
+        for (l in labels) {
+            val x = state.toScreenX(r, l.x); val y = state.toScreenY(r, l.y)
+            if (!inView(r, x, y, -10f * density)) continue
+            if (placed.any { abs(it[0] - x) < minGap && abs(it[1] - y) < minGap * 0.5f }) continue
+            placed.add(floatArrayOf(x, y))
+            haloText(c, l.text, x, y + smallLabel.textSize * 0.36f, l.color, Paint.Align.CENTER)
+        }
+    }
+
+    /** Wind barbs (kts), thinned so they're at least ~38 dp apart; north corrected for the projection. */
+    private fun drawBarbs(c: Canvas, r: RectF, b: FloatArray, proj: Geo.Aeqd?) {
+        val n = b.size / 4
+        if (n == 0) return
+        // the lattice spacing in km, from the first two barbs in a row
+        var stepKm = 0f
+        for (k in 1 until n) { val d = abs(b[4 * k] - b[0]); if (d > 1e-3f && abs(b[4 * k + 1] - b[1]) < 1e-3f) { stepKm = d; break } }
+        if (stepKm <= 0f) stepKm = 50f
+        val stepPx = stepKm * state.scale
+        val skip = maxOf(1, Math.ceil((38f * density / stepPx).toDouble()).toInt())
+        val len = 22f * density
+        stroke.strokeCap = Paint.Cap.ROUND
+        for (k in 0 until n) {
+            val x = state.toScreenX(r, b[4 * k]); val y = state.toScreenY(r, b[4 * k + 1])
+            if (!inView(r, x, y, len)) continue
+            if (skip > 1) {
+                val gi = Math.round(b[4 * k] / stepKm).toInt(); val gj = Math.round(b[4 * k + 1] / stepKm).toInt()
+                if (Math.floorMod(gi, skip) != 0 || Math.floorMod(gj, skip) != 0) continue
+            }
+            val u = b[4 * k + 2]; val v = b[4 * k + 3]
+            val spd = hypot(u, v)
+            val rot = proj?.let { p -> MapRaster.northAngle(p, b[4 * k], b[4 * k + 1]) } ?: 0.0
+            for (pass in 0..1) {
+                stroke.color = if (pass == 0) 0xcc000000.toInt() else 0xffffffff.toInt()
+                stroke.strokeWidth = (if (pass == 0) 3.2f else 1.4f) * density
+                fill.color = stroke.color
+                barb(c, x, y, u, v, spd, len, rot, pass == 0)
+            }
+        }
+        stroke.strokeCap = Paint.Cap.BUTT
+    }
+
+    private fun barb(c: Canvas, x: Float, y: Float, u: Float, v: Float, spd: Float, len: Float, rot: Double, halo: Boolean) {
+        if (spd < 2.5f) { c.drawCircle(x, y, 3f * density, stroke); return }
+        // the shaft points to where the wind comes from
+        val ang = Math.atan2(-u.toDouble(), -v.toDouble()) + rot
+        val dx = sin(ang).toFloat(); val dy = -cos(ang).toFloat()       // screen y is down
+        val tx = x + dx * len; val ty = y + dy * len
+        c.drawLine(x, y, tx, ty, stroke)
+        val parts = MapRaster.barbParts(spd)
+        // barbs on the left of the shaft looking from the station (northern hemisphere)
+        val px = -dy; val py = dx
+        val bl = len * 0.45f
+        var pos = 0f
+        val gap = len * 0.14f
+        repeat(parts[0]) {
+            val bx = tx - dx * pos; val by = ty - dy * pos
+            path.reset()
+            path.moveTo(bx, by)
+            path.lineTo(bx - px * bl + dx * gap * 0.3f, by - py * bl + dy * gap * 0.3f)
+            path.lineTo(bx - dx * gap, by - dy * gap)
+            path.close()
+            fill.style = Paint.Style.FILL
+            c.drawPath(path, fill)
+            if (halo) c.drawPath(path, stroke)
+            pos += gap * 1.25f
+        }
+        repeat(parts[1]) {
+            val bx = tx - dx * pos; val by = ty - dy * pos
+            c.drawLine(bx, by, bx - px * bl + dx * gap * 0.6f, by - py * bl + dy * gap * 0.6f, stroke)
+            pos += gap
+        }
+        if (parts[2] == 1) {
+            if (pos == 0f) pos = gap
+            val bx = tx - dx * pos; val by = ty - dy * pos
+            c.drawLine(bx, by, bx - px * bl * 0.5f + dx * gap * 0.3f, by - py * bl * 0.5f + dy * gap * 0.3f, stroke)
         }
     }
 
@@ -1014,7 +1209,8 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         c.drawLine(x - a, y, x + a, y, stroke); c.drawLine(x, y - a, x, y + a, stroke)
         c.drawCircle(x, y, 5f * density, stroke)
 
-        val lines = readout(p, km)
+        val lines = p.readout?.invoke(km) ?: readout(p, km)
+        if (lines.isEmpty()) return
         val pad = 9f * density
         val w = maxOf(readBig.measureText(lines[0]), lines.drop(1).maxOfOrNull { readSmall.measureText(it) } ?: 0f) + pad * 2
         val h = pad * 2 + readBig.textSize + (lines.size - 1) * (readSmall.textSize + 5 * density)
@@ -1063,7 +1259,8 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
             }
         }
         val ll = proj?.inverse(km[0].toDouble(), km[1].toDouble())
-        return listOfNotNull(value, where, beam, ll?.let { Geo.latLonText(it[0], it[1]) })
+        val extra = extraReadout?.invoke(km) ?: emptyList()
+        return listOfNotNull(value, where, beam) + extra + listOfNotNull(ll?.let { Geo.latLonText(it[0], it[1]) })
     }
 
     fun formatValue(product: Product, v: Float): String = when {
@@ -1075,6 +1272,10 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
             else String.format(Locale.US, "%.0f %s %s", abs(x), u, if (x < 0) "inbound" else "outbound")
         }
         product == Product.REF -> String.format(Locale.US, "%.1f dBZ", v)
+        product == Product.PTYPE -> {
+            val t = (v / 100f).toInt().coerceIn(0, 3)
+            String.format(Locale.US, "%s, %.0f dBZ", com.libexil.radarforge.core.Winter.TYPE_NAMES[t], v - 100f * t)
+        }
         product == Product.ZDR -> String.format(Locale.US, "%.2f dB", v)
         product == Product.CC -> String.format(Locale.US, "CC %.3f", v)
         product == Product.PHI -> String.format(Locale.US, "%.1f°", v)

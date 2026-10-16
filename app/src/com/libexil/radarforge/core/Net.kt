@@ -60,6 +60,38 @@ object Net {
     fun getText(url: String, timeoutMs: Int = 20_000, accept: String? = null, attempts: Int = 3): String =
         String(getBytes(url, timeoutMs, accept, attempts), Charsets.UTF_8)
 
+    /** Bytes [start, end] of a file (end < 0: to the end), e.g. one field of a model file. */
+    fun getRange(url: String, start: Long, end: Long, timeoutMs: Int = 60_000, attempts: Int = 3): ByteArray {
+        var last: IOException? = null
+        for (attempt in 0 until attempts) {
+            try {
+                val c = URL(url).openConnection() as HttpURLConnection
+                c.connectTimeout = timeoutMs
+                c.readTimeout = timeoutMs
+                c.setRequestProperty("User-Agent", userAgent)
+                c.setRequestProperty("Accept-Encoding", "identity")
+                c.setRequestProperty("Range", "bytes=$start-" + if (end >= 0) "$end" else "")
+                val code = c.responseCode
+                if (code !in 200..299) {
+                    c.disconnect()
+                    throw HttpError(code, url)
+                }
+                try {
+                    return c.inputStream.use { it.readBytes() }
+                } finally {
+                    c.disconnect()
+                }
+            } catch (e: HttpError) {
+                if (e.code in 400..499) throw e
+                last = e
+            } catch (e: IOException) {
+                last = e
+            }
+            if (attempt + 1 < attempts) Thread.sleep(500L * (attempt + 1))
+        }
+        throw last ?: IOException("download failed: $url")
+    }
+
     fun readAll(input: InputStream): ByteArray {
         val out = ByteArrayOutputStream()
         input.copyTo(out)

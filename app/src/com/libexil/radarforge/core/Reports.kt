@@ -11,10 +11,15 @@ enum class ReportKind(val letter: String, val color: Int, val label: String, val
     WIND_DAMAGE("W", 0xff50a0ff.toInt(), "Wind damage", "wind"),
     WIND_GUST("G", 0xff96d2ff.toInt(), "Wind gust", "wind"),
     FLOOD("F", 0xff1ec8b4.toInt(), "Flooding", "flood"),
+    SNOW("S", 0xff78afff.toInt(), "Snow", "winter"),
+    BLIZZARD("BZ", 0xffff6e46.toInt(), "Blizzard", "winter"),
+    SLEET("SL", 0xfffaaf6e.toInt(), "Sleet", "winter"),
+    ICE("I", 0xffd778eb.toInt(), "Freezing rain / ice", "winter"),
     OTHER("•", 0xffb4b4be.toInt(), "Other", "other");
 
     companion object {
-        val GROUPS = listOf("tornado" to "Tornado", "hail" to "Hail", "wind" to "Wind", "flood" to "Flood", "other" to "Other")
+        val GROUPS = listOf("tornado" to "Tornado", "hail" to "Hail", "wind" to "Wind", "flood" to "Flood", "winter" to "Winter",
+            "other" to "Other")
     }
 }
 
@@ -32,6 +37,14 @@ class StormReport(
     val origin: String,               // "NWS Norman (OUN)" / "Spotter Network"
 ) {
     val title: String get() = if (magnitude.isNotEmpty()) "${typeTitle()} $magnitude" else typeTitle()
+
+    /** A snow report's total in inches (null when it has none). */
+    val snowInches: Double?
+        get() {
+            if (kind != ReportKind.SNOW) return null
+            val v = magnitude.split(' ').firstOrNull()?.toDoubleOrNull() ?: return null
+            return if (magnitude.uppercase(Locale.US).contains(" CM")) v / 2.54 else v
+        }
 
     private fun typeTitle(): String = if (kind == ReportKind.OTHER && type.isNotBlank())
         type.lowercase(Locale.US).replaceFirstChar { it.titlecase(Locale.US) } else kind.label
@@ -56,6 +69,10 @@ object Reports {
                 ReportKind.WIND_DAMAGE
             "WND" in u || "WIND" in u || "GUST" in u -> ReportKind.WIND_GUST
             "FLOOD" in u || "DEBRIS FLOW" in u -> ReportKind.FLOOD
+            "BLIZZARD" in u -> ReportKind.BLIZZARD
+            "FREEZING" in u || "ICE STORM" in u || "GLAZE" in u -> ReportKind.ICE
+            "SLEET" in u -> ReportKind.SLEET
+            "SNOW" in u -> ReportKind.SNOW
             else -> ReportKind.OTHER
         }
     }
@@ -65,6 +82,7 @@ object Reports {
         "mph" -> "mph"
         "knots", "kts", "kt" -> "kt"
         "f", "ef", "" -> ""
+        "cm" -> "cm"
         else -> u.trim().lowercase(Locale.US)
     }
 

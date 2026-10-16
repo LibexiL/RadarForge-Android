@@ -22,6 +22,9 @@ object Learn {
             "debris, birds, insects and ground clutter well below 0.8.",
         Product.PHI to "Differential phase: builds up through heavy rain. A steady climb along the beam means a lot of " +
             "liquid water; it's mostly used to estimate rainfall.",
+        Product.PTYPE to "Precipitation type: reflectivity coloured by what's reaching the ground – green-yellow-red rain, " +
+            "blue snow, orange sleet, pink freezing rain. The type comes from the HRRR model's analysis for the hour of the scan, " +
+            "so treat the edges between colours as a few miles uncertain.",
     )
 
     /** Signatures worth knowing, for the radar guide. */
@@ -38,6 +41,10 @@ object Learn {
             "look for strong inbound or outbound velocity behind it.",
         "Range folding" to "Purple speckle on velocity is range-folded data: the radar can't tell how far away those " +
             "echoes are. Nothing to worry about.",
+        "Bright band" to "A ring of higher reflectivity (and CC dipping to 0.90–0.95) around the radar in winter: snow melting " +
+            "into rain at the freezing level. The rain / snow line on the ground is usually a little closer to the radar.",
+        "Rain / snow line" to "Use P-Type with the freezing line (Layers → Winter): snow is likely where it's below 32 °F and " +
+            "the echo is steady; sleet and freezing rain show up in the band just on the warm side.",
         "Beam height" to "The beam rises with distance (and the Earth curves away), so far from the radar it overshoots " +
             "low-level rotation. The inspector shows the beam height.",
     )
@@ -46,7 +53,7 @@ object Learn {
      * Notes about the values at one spot. [values]: product -> value (product units: dBZ, m/s, dB, CC),
      * missing products left out. [beamFt]: beam height above the radar in feet.
      */
-    fun explain(values: Map<Product, Float>, beamFt: Double? = null): List<String> {
+    fun explain(values: Map<Product, Float>, beamFt: Double? = null, ptype: Int? = null, tempF: Float? = null): List<String> {
         fun v(p: Product) = values[p]?.takeIf { it.isFinite() }
         val notes = ArrayList<String>()
         val ref = v(Product.REF); val cc = v(Product.CC); val zdr = v(Product.ZDR)
@@ -81,6 +88,13 @@ object Learn {
             val word = if (vel < 0) "toward" else "away from"
             notes.add("${f0(kt)} kt $word the radar" + if (kt >= 50) " – damaging-wind strength if it reaches the ground." else ".")
         }
+        if (ptype != null && ptype in 0..3 && ref != null && ref >= 5) notes.add(when (ptype) {
+            1 -> "Snow here (HRRR)" + if (ref >= 25) " – heavy for snow; rates of an inch an hour are possible." else "."
+            2 -> "Sleet here (HRRR): ice pellets that bounce – a warm layer aloft melts the snow, which refreezes near the ground."
+            3 -> "Freezing rain here (HRRR): rain freezing on contact. Even a tenth of an inch makes roads and trees dangerous."
+            else -> "Rain here (HRRR)."
+        })
+        if (tempF != null && !tempF.isNaN()) notes.add(String.format(Locale.US, "About %.0f °F at the ground (HRRR).", tempF))
         if (beamFt != null && beamFt > 10_000) notes.add(String.format(Locale.US, "The beam is %,d ft up here, so low-level features can be missed.", beamFt.toInt()))
         return notes
     }
