@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.7.1 – 2026-10-15
+
+* **Severe, Winter and Tropical each have their own page** under Layers, so the list isn't one long scroll.
+  * Each page starts with **Set up the map for …**, then has just that weather's switches.
+  * Each page ends with buttons that open its model maps:
+    * **Severe set:** CAPE, helicity, shear and STP in four panels.
+    * **Winter set:** precipitation type, snow, ice and temperature.
+    * **Tropical set:** the GFS over the Atlantic.
+    * Single maps one tap away.
+* **Layers** itself is now the three weather pages, **Clean map**, then warnings on / off, the radar display and
+  the map.
+* Getting started and What's new point to the new pages.
+
 ## 1.7.0 – 2026-10-15
 
 * **Models.** Tap **Models** at the top for forecast maps from the HRRR, NAM 3 km, RAP and GFS, like

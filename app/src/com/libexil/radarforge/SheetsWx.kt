@@ -88,91 +88,55 @@ object SheetsWx {
         col.addView(body, lp())
     }
 
+    private fun layerRow(a: MainActivity, c: LinearLayout, key: String, label: String, desc: String?) =
+        c.addView(W.switchRow(a, label, desc, a.prefs.layer(key)) { on ->
+            a.prefs.setLayer(key, on); if (a.prefs.layerPreset.isNotEmpty()) a.prefs.layerPreset = ""; a.layersChanged()
+        })
+
+    private fun warnRow(a: MainActivity, c: LinearLayout, key: String, label: String, desc: String? = null) =
+        c.addView(W.switchRow(a, label, desc, a.prefs.warnGroup(key)) { on ->
+            a.prefs.setWarnGroup(key, on); if (a.prefs.layerPreset.isNotEmpty()) a.prefs.layerPreset = ""; a.layersChanged()
+        })
+
+    /** The big "Set up the map for …" button at the top of a weather sheet. */
+    private fun setupButton(a: MainActivity, col: LinearLayout, id: String, reopen: () -> Unit) {
+        val ps = PRESETS.first { it.id == id }
+        val on = a.prefs.layerPreset == id
+        col.addView(W.button(a, if (on) "✓ Set up for ${ps.label.lowercase(Locale.US)} weather" else "Set up the map for ${ps.label.lowercase(Locale.US)} weather",
+            primary = !on) { applyPreset(a, ps); reopen() }, lp())
+        col.addView(W.note(a, ps.tip + ". Change any switch below afterwards."), lp(a.dpi(4f)))
+    }
+
+    /** Buttons that open the Models view on a set of maps (several panels) or one field. */
+    private fun modelButtons(a: MainActivity, c: LinearLayout, sets: List<Triple<String, List<String>, Pair<String?, String?>>>,
+                             singles: List<Pair<String, String>>, model: String? = null, region: String? = null) {
+        for ((label, fields, mr) in sets) c.addView(W.button(a, label, primary = false) {
+            a.sheets.close(); a.models.openSet(fields, mr.first, mr.second)
+        }, lp(a.dpi(6f)))
+        val grid = ChipGrid(a, minColDp = 100f)
+        for ((fid, label) in singles) grid.addView(W.chip(a, label) { a.sheets.close(); a.models.openSet(listOf(fid), model, region) }.apply { asTile() })
+        c.addView(grid, lp(a.dpi(8f)))
+        c.addView(W.note(a, "These open the Models view (Radar at the top goes back). Press and hold a map to read its values."), lp(a.dpi(4f)))
+    }
+
+    /** Layers: the weather sheets first, then the layers for any weather. */
     fun layers(a: MainActivity) {
         val p = a.prefs
         val col = W.vCol(a)
-        // presets first: one tap sets up the map for a kind of weather
-        col.addView(W.text(a, "PRESETS", 12f, C.dim, true).apply { letterSpacing = 0.08f; setPadding(a.dpi(4f), 0, 0, a.dpi(6f)) })
-        val grid = ChipGrid(a, minColDp = 76f)
-        val chips = ArrayList<Pair<String, W.Chip>>()
-        for (ps in PRESETS) {
-            val c = W.chip(a, ps.label, p.layerPreset == ps.id) { applyPreset(a, ps); for ((id, ch) in chips) ch.selectedState = id == ps.id; layers(a) }.apply { asTile() }
-            chips.add(ps.id to c)
-            grid.addView(c)
+        col.addView(W.text(a, "WEATHER", 12f, C.dim, true).apply { letterSpacing = 0.08f; setPadding(a.dpi(4f), 0, 0, a.dpi(6f)) })
+        for ((title, sub, open) in listOf(
+            Triple("Severe", "Warnings, storm reports, SPC outlooks, severe model maps (CAPE, helicity, STP)") { severe(a) },
+            Triple("Winter", "Precipitation type, freezing line, snowfall, winter warnings, winter model maps") { winter(a) },
+            Triple("Tropical", "Hurricanes: cones, tracks, arrival times, past storms, tropical model maps") { tropical(a) })) {
+            col.addView(W.listRow(a, title, sub, "›", highlighted = p.layerPreset == title.lowercase(Locale.US)) { open() }, lp())
         }
-        col.addView(grid, lp())
-        col.addView(W.note(a, PRESETS.firstOrNull { it.id == p.layerPreset }?.tip?.let { "$it. Change any switch below." }
-            ?: "Pick a preset, or switch layers on and off below."), lp(a.dpi(4f)))
+        val clean = PRESETS.first { it.id == "clean" }
+        col.addView(W.chip(a, "Clean map: just the radar, the map and warnings", p.layerPreset == "clean") { applyPreset(a, clean); layers(a) }, lp(a.dpi(6f)))
 
-        fun changed() { if (p.layerPreset.isNotEmpty()) p.layerPreset = ""; a.layersChanged() }
-        fun layer(c: LinearLayout, key: String, label: String, desc: String?) =
-            c.addView(W.switchRow(a, label, desc, p.layer(key)) { on -> p.setLayer(key, on); changed() })
-        fun warn(c: LinearLayout, key: String, label: String, desc: String? = null) =
-            c.addView(W.switchRow(a, label, desc, p.warnGroup(key)) { on -> p.setWarnGroup(key, on); changed() })
-
-        section(a, col, "warnings", "Warnings & watches") { c ->
-            layer(c, "warnings", "NWS warnings", "Updated every 90 seconds. Earlier scans in the loop show the warnings of their own time.")
-            warn(c, "tornado", "Tornado")
-            warn(c, "severe", "Severe thunderstorm")
-            warn(c, "flood", "Flash flood")
-            warn(c, "watch", "Tornado & severe watches")
-            warn(c, "winter", "Winter & cold", "Winter storm, blizzard, ice storm, freeze… shaded by county")
-            warn(c, "tropical", "Hurricane & tropical storm", "Including storm surge, shaded by county")
-            warn(c, "other", "Other", "Extreme wind, marine, snow squall, dust storm, special statements")
+        section(a, col, "warnings", "Warnings") { c ->
+            layerRow(a, c, "warnings", "NWS warnings", "Updated every 90 seconds. Earlier scans in the loop show the warnings of their own time.")
+            c.addView(W.note(a, "Which kinds are shown is in Severe, Winter and Tropical."))
             c.addView(W.listRow(a, "Warning lines", "Colours (classic or NWS), width, style and the flash for new warnings", "›") { Sheets.warningLines(a) }, lp())
-        }
-        section(a, col, "reports", "Storm reports & chasers") { c ->
-            layer(c, "reports", "Storm reports", "NWS and Spotter Network reports – snow totals included. Tap one to read it.")
-            c.addView(W.segmented(a, Prefs.REPORT_HOURS.map { "$it" to "$it h" }, "${p.reportHours}") {
-                p.reportHours = it.toInt(); a.applyFeedPrefs(); a.dm.refreshFeed("reports"); a.rebuildFeeds()
-            })
-            val groups = W.hRow(a)
-            for ((g, label) in ReportKind.GROUPS) {
-                groups.addView(W.chip(a, label, p.reportGroup(g)) { ch ->
-                    val on = !p.reportGroup(g); p.setReportGroup(g, on); ch.selectedState = on; a.rebuildFeeds()
-                }, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = a.dpi(6f) })
-            }
-            c.addView(android.widget.HorizontalScrollView(a).apply { isHorizontalScrollBarEnabled = false; addView(groups) }, lp(a.dpi(2f)))
-            c.addView(W.switchRow(a, "Include Spotter Network reports", "Often before the NWS posts them", p.spotterReports) {
-                p.spotterReports = it; a.applyFeedPrefs(); a.dm.refreshFeed("reports"); a.rebuildFeeds()
-            })
-            c.addView(W.listRow(a, "List of storm reports", "Newest first, near this radar", "›") { Sheets.reportList(a, a.visibleReports, "Storm reports") }, lp())
-            layer(c, "chasers", "Storm chasers", "Spotter Network positions, every minute")
-            c.addView(W.segmented(a, listOf("all" to "Everyone", "active" to "Active reporters"), if (p.chasersActiveOnly) "active" else "all") {
-                p.chasersActiveOnly = it == "active"; a.applyFeedPrefs(); a.dm.refreshFeed("chasers")
-            })
-            c.addView(W.switchRow(a, "Chaser names", "When zoomed in", p.chaserNames) { p.chaserNames = it; a.rebuildFeeds() })
-        }
-        section(a, col, "spc", "Severe outlook (SPC)") { c ->
-            layer(c, "outlook", "Severe weather outlook", "TSTM to HIGH risk areas. Tap inside one for the chances there.")
-            c.addView(W.segmented(a, listOf("1" to "Today", "2" to "Day 2", "3" to "Day 3"), "${p.outlookDay}") {
-                p.outlookDay = it.toInt(); a.applyFeedPrefs(); a.rebuildSpc(); a.rebuild()
-            })
-            layer(c, "mcd", "Mesoscale discussions", "Blue outlines – tap one to read it")
-        }
-        section(a, col, "winter", "Winter") { c ->
-            c.addView(W.switchRow(a, "Precipitation type", "The active panel shows P-Type: reflectivity coloured rain / snow / sleet / freezing rain (from the HRRR)",
-                Product.PTYPE in p.panelProducts.take(a.state.panelCount)) { on -> a.togglePtype(on) })
-            layer(c, "freezing", "Freezing line", "The 32 °F line at the ground for the hour of the scan (HRRR)")
-            layer(c, "snowfall", "Snowfall totals", "NOAA's snowfall analysis (NOHRSC), shaded")
-            c.addView(W.segmented(a, listOf("24" to "24 h", "48" to "48 h", "72" to "72 h"), "${p.snowfallHours}") {
-                p.snowfallHours = it.toInt(); a.layersChanged()
-            })
-            c.addView(W.switchRow(a, "Winter colours", "A reflectivity colour table that spreads light snow over more shades", p.winterColors) {
-                p.winterColors = it; a.settingsChanged()
-            })
-        }
-        section(a, col, "tropical", "Tropical") { c ->
-            layer(c, "tropical", "Hurricanes & tropical storms", "From the National Hurricane Center: position, forecast cone and track, coastal watches and warnings. Tap a storm for details and when it could reach you.")
-            layer(c, "tropical_wind", "Wind field", "Where tropical-storm (yellow), 50 kt (orange) and hurricane-force (red) winds are now")
-            layer(c, "tropical_models", "Model tracks", "Spaghetti: GFS, European, HAFS, Canadian, UK and the consensus")
-            layer(c, "tropical_outlook", "Tropical outlook", "Areas to watch, with the chance of a storm forming in 2 and 7 days")
-            layer(c, "buoys", "Buoys", "Wind, gusts and waves from NOAA buoys and coastal stations, when zoomed in")
-            layer(c, "rainfall", "Rainfall totals", "Radar and gauge estimates (MRMS) – tropical rain")
-            c.addView(W.segmented(a, listOf("24" to "24 h", "48" to "48 h", "72" to "72 h"), "${p.rainfallHours}") {
-                p.rainfallHours = it.toInt(); a.layersChanged()
-            })
-            c.addView(W.listRow(a, "Storms, past storms and history", "Active storm details, past hurricane tracks, storms that passed near you", "›") { tropical(a) }, lp())
         }
         section(a, col, "radar_extras", "Radar display") { c ->
             c.addView(W.switchRow(a, "Colour bars", "The colour scale along the edge of each panel", p.showLegend) { p.showLegend = it; a.settingsChanged() })
@@ -187,13 +151,104 @@ object SheetsWx {
             c.addView(W.listRow(a, "Colour tables", "Built-in, or import your own .pal files", "›") { Sheets.colorTables(a) }, lp())
         }
         section(a, col, "map", "Map") { c ->
-            layer(c, "counties", "Counties", null)
-            layer(c, "roads", "Highways", null)
-            layer(c, "cities", "Cities", null)
-            layer(c, "rings", "Range rings", "Every 50 ${p.distUnits} around the radar")
-            layer(c, "sites", "Radar sites", "Tap one on the map to switch to it")
+            layerRow(a, c, "counties", "Counties", null)
+            layerRow(a, c, "roads", "Highways", null)
+            layerRow(a, c, "cities", "Cities", null)
+            layerRow(a, c, "rings", "Range rings", "Every 50 ${p.distUnits} around the radar")
+            layerRow(a, c, "sites", "Radar sites", "Tap one on the map to switch to it")
         }
         a.sheets.show("Layers", col, fullHeight = true)
+    }
+
+    private fun backAction(a: MainActivity) = listOf<View>(W.iconButton(a, Icon.PREV, "Back to Layers") { layers(a) })
+
+    // ------------------------------------------------------------------ severe
+    fun severe(a: MainActivity) {
+        val p = a.prefs
+        val col = W.vCol(a)
+        setupButton(a, col, "severe") { severe(a) }
+        section(a, col, "sev_warn", "Warnings & watches") { c ->
+            layerRow(a, c, "warnings", "NWS warnings", null)
+            warnRow(a, c, "tornado", "Tornado")
+            warnRow(a, c, "severe", "Severe thunderstorm")
+            warnRow(a, c, "flood", "Flash flood")
+            warnRow(a, c, "watch", "Tornado & severe watches")
+            warnRow(a, c, "other", "Other", "Extreme wind, marine, snow squall, dust storm, special statements")
+        }
+        section(a, col, "sev_reports", "Storm reports & chasers") { c ->
+            layerRow(a, c, "reports", "Storm reports", "NWS and Spotter Network reports. Tap one to read it.")
+            c.addView(W.segmented(a, Prefs.REPORT_HOURS.map { "$it" to "$it h" }, "${p.reportHours}") {
+                p.reportHours = it.toInt(); a.applyFeedPrefs(); a.dm.refreshFeed("reports"); a.rebuildFeeds()
+            })
+            val groups = W.hRow(a)
+            for ((g, label) in ReportKind.GROUPS) {
+                groups.addView(W.chip(a, label, p.reportGroup(g)) { ch ->
+                    val on = !p.reportGroup(g); p.setReportGroup(g, on); ch.selectedState = on; a.rebuildFeeds()
+                }, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = a.dpi(6f) })
+            }
+            c.addView(android.widget.HorizontalScrollView(a).apply { isHorizontalScrollBarEnabled = false; addView(groups) }, lp(a.dpi(2f)))
+            c.addView(W.switchRow(a, "Include Spotter Network reports", "Often before the NWS posts them", p.spotterReports) {
+                p.spotterReports = it; a.applyFeedPrefs(); a.dm.refreshFeed("reports"); a.rebuildFeeds()
+            })
+            c.addView(W.listRow(a, "List of storm reports", "Newest first, near this radar", "›") { Sheets.reportList(a, a.visibleReports, "Storm reports") }, lp())
+            layerRow(a, c, "chasers", "Storm chasers", "Spotter Network positions, every minute")
+            c.addView(W.segmented(a, listOf("all" to "Everyone", "active" to "Active reporters"), if (p.chasersActiveOnly) "active" else "all") {
+                p.chasersActiveOnly = it == "active"; a.applyFeedPrefs(); a.dm.refreshFeed("chasers")
+            })
+            c.addView(W.switchRow(a, "Chaser names", "When zoomed in", p.chaserNames) { p.chaserNames = it; a.rebuildFeeds() })
+        }
+        section(a, col, "sev_spc", "Storm Prediction Center") { c ->
+            layerRow(a, c, "outlook", "Severe weather outlook", "TSTM to HIGH risk areas. Tap inside one for the chances there.")
+            c.addView(W.segmented(a, listOf("1" to "Today", "2" to "Day 2", "3" to "Day 3"), "${p.outlookDay}") {
+                p.outlookDay = it.toInt(); a.applyFeedPrefs(); a.rebuildSpc(); a.rebuild()
+            })
+            layerRow(a, c, "mcd", "Mesoscale discussions", "Blue outlines – tap one to read it")
+        }
+        section(a, col, "sev_models", "Severe model maps") { c ->
+            modelButtons(a, c, listOf(
+                Triple("Severe set: CAPE, helicity, shear, STP", listOf("cape_ml", "srh01", "shear06", "stp"), "hrrr" to null),
+                Triple("Storm-scale set: radar, updraft helicity, dewpoint, SCP", listOf("refc", "uh25", "td2m", "scp"), "hrrr" to null)),
+                listOf("refc" to "Sim. radar", "cape_ml" to "MLCAPE", "cape_sb" to "SBCAPE", "stp" to "STP", "scp" to "SCP",
+                    "srh01" to "0–1 km SRH", "srh03" to "0–3 km SRH", "shear06" to "0–6 km shear", "uh25" to "Updraft hel.",
+                    "lapse75" to "Lapse rates", "td2m" to "Dewpoint", "cin_sb" to "CIN"))
+        }
+        a.sheets.show("Severe", col, fullHeight = true, actions = backAction(a))
+    }
+
+    // ------------------------------------------------------------------ winter
+    fun winter(a: MainActivity) {
+        val p = a.prefs
+        val col = W.vCol(a)
+        setupButton(a, col, "winter") { winter(a) }
+        section(a, col, "win_radar", "On the radar") { c ->
+            c.addView(W.switchRow(a, "Precipitation type", "The active panel shows P-Type: reflectivity coloured rain / snow / sleet / freezing rain (from the HRRR)",
+                Product.PTYPE in p.panelProducts.take(a.state.panelCount)) { on -> a.togglePtype(on) })
+            c.addView(W.switchRow(a, "Winter colours", "A reflectivity colour table that spreads light snow over more shades", p.winterColors) {
+                p.winterColors = it; a.settingsChanged()
+            })
+        }
+        section(a, col, "win_snow", "Snow & ice") { c ->
+            layerRow(a, c, "freezing", "Freezing line", "The 32 °F line at the ground for the hour of the scan (HRRR)")
+            layerRow(a, c, "snowfall", "Snowfall totals", "NOAA's snowfall analysis (NOHRSC), shaded")
+            c.addView(W.segmented(a, listOf("24" to "24 h", "48" to "48 h", "72" to "72 h"), "${p.snowfallHours}") {
+                p.snowfallHours = it.toInt(); a.layersChanged()
+            })
+        }
+        section(a, col, "win_alerts", "Warnings & reports") { c ->
+            warnRow(a, c, "winter", "Winter & cold warnings", "Winter storm, blizzard, ice storm, freeze… shaded by county")
+            c.addView(W.switchRow(a, "Snow & ice reports", "With snow totals beside them", p.reportGroup("winter") && p.layer("reports")) { on ->
+                p.setReportGroup("winter", on); if (on) p.setLayer("reports", true); a.layersChanged()
+            })
+            layerRow(a, c, "mcd", "Mesoscale discussions", "The SPC covers heavy snow and freezing rain too")
+        }
+        section(a, col, "win_models", "Winter model maps") { c ->
+            modelButtons(a, c, listOf(
+                Triple("Winter set: type, snow, ice, temperature", listOf("ptype", "snow10", "frzr", "t2m"), null to null),
+                Triple("Snow set: 10:1, model snow, depth, 850 mb", listOf("snow10", "asnow", "snod", "t850"), null to null)),
+                listOf("ptype" to "P-type", "snow10" to "Snow 10:1", "asnow" to "Model snow", "frzr" to "Freezing rain",
+                    "t2m" to "2 m temp", "t850" to "850 mb temp", "snod" to "Snow depth", "qpf" to "Total precip"))
+        }
+        a.sheets.show("Winter", col, fullHeight = true, actions = backAction(a))
     }
 
     // ------------------------------------------------------------------ models
@@ -272,10 +327,7 @@ object SheetsWx {
         val wx = a.wx
         val p = a.prefs
         val col = W.vCol(a)
-        if (!p.layer("tropical")) {
-            col.addView(W.note(a, "Hurricanes are switched off on the map."))
-            col.addView(W.button(a, "Show hurricanes", primary = true) { p.setLayer("tropical", true); p.setLayer("tropical_wind", true); a.layersChanged(); wx.refreshTropical(true); tropical(a) }, lp())
-        }
+        setupButton(a, col, "tropical") { tropical(a) }
         col.addView(W.section(a, "Active storms"))
         val storms = wx.storms
         when {
@@ -291,9 +343,25 @@ object SheetsWx {
                 col.addView(row, lp(a.dpi(2f)))
             }
         }
-        col.addView(W.section(a, "On the map"))
-        for ((k, label) in listOf("tropical_wind" to "Wind field", "tropical_models" to "Model tracks", "tropical_outlook" to "Outlook (areas to watch)", "buoys" to "Buoys")) {
-            col.addView(W.switchRow(a, label, null, p.layer(k)) { on -> p.setLayer(k, on); p.layerPreset = ""; a.layersChanged(); wx.refreshTropical() })
+        section(a, col, "tro_map", "On the map") { c ->
+            for ((k, label, desc) in listOf(
+                Triple("tropical", "Storms, cones & tracks", "From the National Hurricane Center, with coastal watches and warnings. Tap a storm for details."),
+                Triple("tropical_wind", "Wind field", "Where tropical-storm (yellow), 50 kt (orange) and hurricane-force (red) winds are now"),
+                Triple("tropical_models", "Model tracks", "GFS, European, HAFS, Canadian, UK and the consensus"),
+                Triple("tropical_outlook", "Outlook", "Areas to watch, with the chance of a storm forming in 2 and 7 days"),
+                Triple("buoys", "Buoys", "Wind, gusts and waves from buoys and coastal stations, when zoomed in"),
+                Triple("rainfall", "Rainfall totals", "Radar and gauge estimates (MRMS)"))) {
+                c.addView(W.switchRow(a, label, desc, p.layer(k)) { on -> p.setLayer(k, on); p.layerPreset = ""; a.layersChanged(); wx.refreshTropical() })
+            }
+            c.addView(W.segmented(a, listOf("24" to "Rain 24 h", "48" to "48 h", "72" to "72 h"), "${p.rainfallHours}") {
+                p.rainfallHours = it.toInt(); a.layersChanged()
+            })
+            warnRow(a, c, "tropical", "Hurricane & storm surge warnings", "Shaded by county")
+        }
+        section(a, col, "tro_models", "Tropical model maps") { c ->
+            modelButtons(a, c, listOf(Triple("Tropical set (GFS): pressure, wind, moisture, rain", listOf("mslp", "wind10", "pwat", "qpf"), "gfs" to "Atlantic tropics")),
+                listOf("mslp" to "Pressure & radar", "wind10" to "10 m wind", "qpf" to "Total rain", "h500" to "Steering (500 mb)"),
+                model = "gfs", region = "Atlantic tropics")
         }
 
         col.addView(W.section(a, "Past storms"))
@@ -319,7 +387,7 @@ object SheetsWx {
         if (wx.history.isNotEmpty()) col.addView(W.button(a, "Clear ${if (wx.history.size == 1) wx.history[0].displayName else "${wx.history.size} past tracks"} from the map") {
             wx.history = emptyList(); tropical(a)
         }, lp(a.dpi(8f)))
-        a.sheets.show("Tropical", col, fullHeight = true)
+        a.sheets.show("Tropical", col, fullHeight = true, actions = backAction(a))
     }
 
     private fun movement(s: Tropical.Storm): String =

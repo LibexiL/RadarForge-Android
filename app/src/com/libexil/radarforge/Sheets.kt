@@ -943,7 +943,7 @@ object Sheets {
             "Models: HRRR, NAM 3 km, RAP and GFS maps, like Pivotal Weather – CAPE, helicity, shear, STP, simulated radar, temperature, wind, precipitation, snow and more. Tap Models at the top.",
             "Winter: precipitation type on the radar (P-Type), the freezing line, snowfall totals, winter storm warnings shaded by county, and snow totals on storm reports.",
             "Hurricanes: active storms with their cone, track, wind field and coastal warnings, when the winds could reach you, model tracks, the tropical outlook, buoys, rainfall totals, past storms and the storms that passed near you.",
-            "Presets in Layers: Severe, Winter, Tropical or Clean set up the map in one tap. Layers are grouped, and groups fold away.",
+            "Layers is tidier: Severe, Winter and Tropical each have their own page with a one-tap setup, their switches, and buttons that open their model maps.",
             "Share a picture of the map has moved to Settings.",
         ))
         val buttons = W.hRow(a)
@@ -964,8 +964,8 @@ object Sheets {
             "Move around" to "Drag to move, pinch to zoom, double-tap to zoom in, two-finger tap to zoom out. Press and hold to read the value under your finger.",
             "Products and panels" to "Pick a product along the bottom (reflectivity, velocity, P-Type…); the arrows change the tilt. The panel button shows 2 or 4 linked panels. Play loops the previous scans.",
             "Warnings" to "Coloured outlines are NWS warnings: red tornado, magenta confirmed or PDS tornado, yellow severe thunderstorm, green flash flood. Winter and tropical warnings shade whole counties. Tap one to read it.",
-            "Layers and presets" to "The Layers button: one tap on Severe, Winter, Tropical or Clean sets up the map for that weather. Below are the switches, in groups that fold away.",
-            "Models" to "Tap Models at the top for forecast maps (HRRR, NAM, RAP, GFS): pick a field, step through the hours with ◀ ▶, or play. Radar takes you back.",
+            "Severe, Winter, Tropical" to "The Layers button opens a page for each kind of weather, with a one-tap setup, its switches and its model maps. The rest of Layers is the radar display and the map.",
+            "Models" to "Tap Models at the top for forecast maps (HRRR, NAM, RAP, GFS). Quickest way in: Layers → Severe → Severe set shows CAPE, helicity, shear and STP. ◀ ▶ step the hours; Radar takes you back.",
         )
         for ((i, step) in steps.withIndex()) {
             val row = W.hRow(a).apply { setPadding(0, a.dpi(6f), 0, a.dpi(6f)) }

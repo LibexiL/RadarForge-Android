@@ -390,6 +390,36 @@ class ModelsMode(private val a: MainActivity) {
         changed()
     }
 
+    /**
+     * Opens the Models view on a set of maps (one per panel: 2 or 4) or one field in the active panel, optionally
+     * with a model and an area (the Severe / Winter / Tropical sheets' buttons).
+     */
+    fun openSet(fields: List<String>, model: String? = null, region: String? = null) {
+        if (model != null && model != p.modelId && model in Models.MODELS) {
+            p.modelId = model; p.modelRun = 0L; errors.clear(); refreshRuns(); clampHour()
+        }
+        when {
+            region != null -> p.modelRegion = region
+            fields.size > 1 && p.modelRegion == "Atlantic tropics" -> p.modelRegion = "CONUS"     // a severe / winter set: over land
+        }
+        if (p.modelId != "gfs" && p.modelRegion == "Atlantic tropics") p.modelRegion = "CONUS"
+        if (fields.size > 1) {
+            val l = p.modelFields.toMutableList()
+            for ((i, f) in fields.take(4).withIndex()) l[i] = f
+            p.modelFields = l
+            p.modelPanels = if (fields.size >= 3) 4 else 2
+        } else if (fields.size == 1) {
+            val l = p.modelFields.toMutableList()
+            l[a.state.activePanel.coerceIn(0, p.modelPanels - 1)] = fields[0]
+            p.modelFields = l
+        }
+        if (!active) { a.setViewMode("models"); if (!active) return }
+        setPanels(p.modelPanels)
+        ensureGeo()
+        if (geo?.region != p.modelRegion) pictures.clear()
+        changed()
+    }
+
     fun cyclePanels() = setPanels(when (p.modelPanels) { 1 -> 2; 2 -> 4; else -> 1 })
 
     fun setOpacity(f: Float) { p.modelOpacity = f; a.rebuild() }

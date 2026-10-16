@@ -56,8 +56,8 @@ the newer `.apk` and install it over the old one. Your settings are kept either 
 - **Hurricanes:** NHC storms with cone, track, wind field and coastal warnings; when a storm's winds would
   reach you; model tracks; the tropical outlook; buoys; MRMS rainfall totals; past storms and storms that
   passed near you.
-- **Layers with presets:** Severe, Winter, Tropical and Clean set up the map in one tap; the switches below
-  are grouped and fold away.
+- **Severe, Winter and Tropical pages** under Layers: each has a one-tap setup, that weather's switches, and
+  buttons that open its model maps (e.g. Severe set: CAPE, helicity, shear and STP).
 - **Dealias velocity**: unfolds aliased velocity (BV and SRV) with the same region-based method as the
   desktop app, so strong winds and tight couplets don't flip colour.
 - **Σ max-value trail**: each panel shows the strongest value seen at every spot over the loaded scans –
@@ -105,13 +105,13 @@ the newer `.apk` and install it over the old one. Your settings are kept either 
 | Read a value | Press and hold the map (drag to move the cross-hair, tap to hide it) |
 | Change product | Tap a product along the bottom (BR, BV, SRV, CC, ZDR, SW, PHI, P-Type) |
 | Models | **Models** at the top: pick a field along the bottom (or **All fields**), ◀ ▶ step the hours, ▶ plays, the model chip changes model / run / area. **Radar** goes back |
-| Presets | Layers → **Severe**, **Winter**, **Tropical** or **Clean** |
+| Severe / Winter / Tropical | Layers → the weather's page: **Set up the map for …**, its switches, and its model maps |
 | Hurricanes | Layers → Tropical; tap a storm for details and arrival times; **Storms, past storms and history** for past tracks |
 | Change tilt | The arrows at the bottom left, or tap the tilt to pick from the list |
 | 2 or 4 panels | The panel button; tap a panel to choose its product |
 | Loop | ▶ at the bottom plays the previous scans (already loaded); ◀ ▶ step one scan, drag the slider to scrub, ✕ to stop |
 | Warnings | The ⚠ button at the top (the number counts warnings near the radar) |
-| Layers | The layers button at the top: presets, then warnings & watches, storm reports & chasers, SPC, winter, tropical, radar display, map |
+| Layers | The layers button at the top: the Severe, Winter and Tropical pages, Clean map, then warnings, radar display, map |
 | Dealias / Σ trail / learn mode | Layers → Radar display |
 | Theme | Settings → Theme (or press and hold the settings button) |
 | Reload | Radar list → **Reload**, or Settings → Reload radar data |
