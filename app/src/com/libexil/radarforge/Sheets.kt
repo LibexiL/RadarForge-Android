@@ -940,6 +940,8 @@ object Sheets {
         a.prefs.seenWhatsNew = MainActivity.WHATS_NEW
         val col = W.vCol(a)
         checkList(a, col, listOf(
+            "Faster radar downloads: the newest scan shows tilt by tilt as it arrives, previous scans download several at a time, and the last few minutes of scans no longer go missing while the archive catches up.",
+            "Live data finds a radar's newest scan much quicker and is checked every 8 seconds, so new tilts turn up sooner.",
             "Models: HRRR, NAM 3 km, RAP and GFS maps, like Pivotal Weather – CAPE, helicity, shear, STP, simulated radar, temperature, wind, precipitation, snow and more. Tap Models at the top.",
             "Winter: precipitation type on the radar (P-Type), the freezing line, snowfall totals, winter storm warnings shaded by county, and snow totals on storm reports.",
             "Hurricanes: active storms with their cone, track, wind field and coastal warnings, when the winds could reach you, model tracks, the tropical outlook, buoys, rainfall totals, past storms and the storms that passed near you.",

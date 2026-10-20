@@ -40,9 +40,10 @@ private object FakeS3 {
             done = true
             when (url.host) {
                 "unidata-nexrad-level2.s3.amazonaws.com" -> if (url.path.isEmpty() || url.path == "/") {
-                    val prefix = URLDecoder.decode(Regex("prefix=([^&]*)").find(url.query ?: "")?.groupValues?.get(1) ?: "", "UTF-8")
+                    val prefix = URLDecoder.decode(Regex("[?&]prefix=([^&]*)").find("?" + (url.query ?: ""))?.groupValues?.get(1) ?: "", "UTF-8")
+                    val after = Regex("start-after=([^&]*)").find(url.query ?: "")?.groupValues?.get(1)?.let { URLDecoder.decode(it, "UTF-8") }
                     val xml = StringBuilder("<ListBucketResult><IsTruncated>false</IsTruncated>")
-                    for ((k, b) in files) if (k.startsWith(prefix)) xml.append("<Contents><Key>$k</Key><Size>${b.size}</Size></Contents>")
+                    for ((k, b) in files) if (k.startsWith(prefix) && (after == null || k > after)) xml.append("<Contents><Key>$k</Key><Size>${b.size}</Size></Contents>")
                     body = xml.append("</ListBucketResult>").toString().toByteArray()
                     requests.add("LIST $prefix")
                 } else {
@@ -99,7 +100,7 @@ private fun previousScansLoad() {
     fun waitLoop(maxMs: Long = 60_000) {
         val t = System.currentTimeMillis()
         Thread.sleep(600)
-        while (System.currentTimeMillis() - t < maxMs && (dm.complete == null || dm.loopTotal != 0)) Thread.sleep(200)
+        while (System.currentTimeMillis() - t < maxMs && (dm.complete?.complete != true || dm.loopTotal != 0)) Thread.sleep(200)
         Thread.sleep(200)
     }
     fun loop(tilt: Float, moments: Set<String>): List<LoopFrame> {
@@ -119,7 +120,7 @@ private fun previousScansLoad() {
         waitLoop()
         ok(dm.complete != null, "newest volume loaded (log: ${com.libexil.radarforge.RfLog.lines.takeLast(5)})")
         val l2 = File(cache, "l2")
-        ok(l2.listFiles()!!.count { it.name.endsWith("_V06") } == 1, "newest volume cached: ${l2.list()?.toList()}")
+        ok(l2.listFiles()!!.count { it.name.endsWith("_V06") } == 1, "newest volume cached")
         val l1 = loop(0.5f, setOf("REF"))
         ok(l1.size == 10, "10 previous scans, got ${l1.size} (log: ${com.libexil.radarforge.RfLog.lines.takeLast(5)})")
         ok(l2.listFiles()!!.count { it.name.endsWith(".part") } == 10, "starts of the older files cached: ${l2.list()?.toList()}")

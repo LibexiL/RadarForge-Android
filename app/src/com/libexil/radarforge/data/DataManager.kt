@@ -58,6 +58,10 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
         return ThreadFactory { r -> Thread(r, "$name-${n.incrementAndGet()}").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 } }
     }
     private val pool = Executors.newFixedThreadPool(4, daemon("rf-net"))
+    // small downloads (live chunks), and the previous scans: each on threads of their own, so a long download
+    // never makes the live feed wait
+    private val dlPool = Executors.newFixedThreadPool(6, daemon("rf-dl"))
+    private val loopPool = Executors.newFixedThreadPool(3, daemon("rf-loop"))
     private val sched = Executors.newScheduledThreadPool(2, daemon("rf-poll"))
     // storm reports, chasers and SPC have their own threads so a slow site never holds up the radar
     private val feedPool = Executors.newFixedThreadPool(2, daemon("rf-feed"))
@@ -123,7 +127,8 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
         retryDelayMs = 20_000L
         main.removeCallbacks(loopRetry)
         // the loop request stays: its frames load for the new radar once its newest volume is in
-        tracker = ChunkTracker(newSite, pool)
+        tracker = ChunkTracker(newSite, dlPool)
+        archiveNewestMs = 0L
         post { listener?.onVolumes(); listener?.onFrames() }
         status("Loading $newSite…", busy = true)
         newestPending = true
@@ -134,7 +139,9 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
     /** Starts the live feed for the current radar again (Reload). Keeps what's loaded. */
     fun reload() {
         if (site.isEmpty()) return
-        tracker = ChunkTracker(site, pool)
+        tracker = ChunkTracker(site, dlPool)
+        S3.forgetListings()
+        filledFor = -1
         if (running) { startLive(); startAlerts(); startFeeds() }
         if (complete == null && !newestPending) {
             val g = gen.get(); val s = site
@@ -180,22 +187,39 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
     // ------------------------------------------------------------------ newest archive volume
     @Volatile private var newestPending = false
 
+    /** Time of the newest archive file (0: not listed yet), so the live-feed fill doesn't fetch it again. */
+    @Volatile private var archiveNewestMs = 0L
+
     private fun loadNewestArchive(s: String, g: Int) {
         try {
-            val files = S3.latestLevel2(s, 1)
+            // listed together with the previous scans (one request for both)
+            val files = S3.latestLevel2(s, maxOf(1, (loopWanted?.previous ?: 0) + 1))
             if (!current(g)) return
             val f = files.lastOrNull()
+            archiveNewestMs = f?.timeMs ?: 1L
             if (f == null) {
                 status("No recent data for $s – the radar may be down", error = true)
                 return
             }
-            val v = readCachedOrDownload(f, s, g, ChunkTracker.SKIP, null, null) ?: return
+            // show each tilt as soon as it's decoded (the lowest is on screen within a second or two)
+            var shownElev = 0
+            var shownAt = 0L
+            val v = readCachedOrDownload(f, s, g, ChunkTracker.SKIP, null) { b ->
+                val now = System.currentTimeMillis()
+                if (b.lastElevNum != shownElev && b.lastElevNum > 1 && now - shownAt > 500) {
+                    shownElev = b.lastElevNum
+                    shownAt = now
+                    showPartial(b.build(s), g)
+                }
+                false
+            } ?: return
             if (!current(g)) return
             v.complete = true
             var newer = false
             synchronized(this) {
                 if (!current(g)) return
-                if ((complete?.startMs ?: 0) < v.startMs) { complete = v; newer = true }
+                val c = complete
+                if (c == null || c.startMs < v.startMs || (!c.complete && c.startMs == v.startMs)) { complete = v; newer = true }
             }
             lastDataMs = System.currentTimeMillis()
             RfLog.i("$s archive volume ${f.name}: ${v.sweeps.size} sweeps")
@@ -221,6 +245,19 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
                 if (loopWanted != null) runLoopJob()
             }
         }
+    }
+
+    /** A volume still downloading becomes the one on screen while nothing better is there. */
+    private fun showPartial(v: Volume, g: Int) {
+        if (v.sweeps.isEmpty()) return
+        v.complete = false
+        synchronized(this) {
+            if (!current(g)) return
+            val c = complete
+            if (c != null && (c.complete || c.startMs > v.startMs)) return
+            complete = v
+        }
+        post { listener?.onVolumes() }
     }
 
     /**
@@ -312,6 +349,7 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
             try {
                 val v = t.poll { current(g) }
                 failures = 0
+                t.currentVolume?.let { vol -> if (filledFor != g) { filledFor = g; pool.execute { fillRecent(s, g, vol) } } }
                 if (v != null && current(g)) {
                     var finished: Volume? = null
                     synchronized(this) {
@@ -334,7 +372,58 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
                 RfLog.w("$s live poll failed: $e")
                 if (failures >= 2 && current(g)) status(if (e is Exception) friendly(e) else "Low on memory – retrying", error = true)
             }
-        }, 0, 12, TimeUnit.SECONDS)
+        }, 0, 8, TimeUnit.SECONDS)
+    }
+
+    @Volatile private var filledFor = -1
+
+    /**
+     * The archive lags the radar by 5-15 minutes. The last couple of finished volumes are still in the chunk
+     * bucket, though: take those that are newer than the archive's newest, so the newest complete scan and the
+     * loop have no gap.
+     */
+    private fun fillRecent(s: String, g: Int, liveVol: Int) {
+        try {
+            val t0 = System.currentTimeMillis()
+            while (archiveNewestMs == 0L && current(g) && System.currentTimeMillis() - t0 < 8_000) Thread.sleep(250)
+            if (!current(g)) return
+            for (chunks in recentChunkVolumes(s, liveVol, archiveNewestMs, 2)) {
+                if (!current(g)) return
+                val v = ChunkTracker.downloadVolume(s, chunks, dlPool, { current(g) }) ?: continue
+                if (!v.complete || v.sweeps.isEmpty()) continue
+                var newer = false
+                synchronized(this) {
+                    if (!current(g)) return
+                    val c = complete
+                    if (c == null || c.startMs < v.startMs - LoopSupport.SAME_SCAN_MS || (!c.complete && c.startMs <= v.startMs)) {
+                        complete = v; newer = true
+                    }
+                }
+                addCompleteToLoop(v, g)
+                if (newer) {
+                    lastDataMs = System.currentTimeMillis()
+                    RfLog.i("$s newest complete volume from the live feed: ${chunks[0].stamp}")
+                    post { listener?.onVolumes() }
+                    status("")
+                }
+            }
+        } catch (e: Exception) {
+            RfLog.w("$s recent volumes from chunks failed: $e")
+        }
+    }
+
+    /** Finished volumes before [liveVol] in the chunk bucket that are newer than [afterMs], newest first. */
+    private fun recentChunkVolumes(s: String, liveVol: Int, afterMs: Long, max: Int): List<List<S3.Chunk>> {
+        val out = ArrayList<List<S3.Chunk>>()
+        var v = S3.prevVolume(liveVol)
+        for (i in 0 until max) {
+            val chunks = S3.listChunks(s, v)
+            if (chunks.isEmpty() || chunks.last().kind != 'E') break
+            if (chunks[0].timeMs <= afterMs + LoopSupport.SAME_SCAN_MS) break
+            out.add(chunks)
+            v = S3.prevVolume(v)
+        }
+        return out
     }
 
     // ------------------------------------------------------------------ loop frames (previous scans)
@@ -397,35 +486,58 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
                 // one more than wanted: the newest file is usually the volume shown as "now"
                 val files = S3.latestLevel2(s, req.previous + 1)
                 if (files.isEmpty()) { loopError = "No earlier scans found for $s"; break }
-                val newestFirst = files.reversed()
                 if (!current(g)) break
-                loopTotal = newestFirst.size
+                // scans newer than the archive's newest (it lags): from the live feed's chunk bucket
+                val liveVol = tracker?.currentVolume
+                val gap = if (liveVol == null) emptyList() else try {
+                    recentChunkVolumes(s, liveVol, files.last().timeMs, 3)
+                } catch (e: Exception) { emptyList() }
+                // those count towards the scans wanted: fewer archive files are needed
+                val newestFirst = files.reversed().take(maxOf(1, req.previous + 1 - gap.size))
+                loopTotal = newestFirst.size + gap.size
                 loopReady = 0
                 post { listener?.onFrames() }
-                for (f in newestFirst) {
-                    if (!current(g) || loopWanted !== req || !running) break
-                    val have = frames.any { Math.abs(it.timeMs - f.timeMs) < LoopSupport.SAME_SCAN_MS && it.covers(req.tilt, req.moments) }
-                    if (!have) {
+                fun covered(t: Long) = frames.any { Math.abs(it.timeMs - t) < LoopSupport.SAME_SCAN_MS && it.covers(req.tilt, req.moments) }
+                fun wanted() = current(g) && loopWanted === req && running
+                // three downloads side by side, newest first; frames are added as each one finishes
+                val tasks = ArrayList<java.util.concurrent.Future<Volume?>?>()
+                for (chunks in gap) {
+                    val t = chunks[0].timeMs
+                    tasks.add(if (covered(t)) null else loopPool.submit<Volume?> {
                         val c = complete
-                        val v: Volume? = if (c != null && Math.abs(c.startMs - f.timeMs) < LoopSupport.SAME_SCAN_MS) {
-                            c                                            // already in memory: no download
-                        } else try {
-                            val enough = LoopSupport.enoughFor(req.tilt, req.moments)
-                            readCachedOrDownload(f, s, g, ChunkTracker.SKIP, req.moments) { b -> loopWanted !== req || enough(b) }
+                        val e = LoopSupport.enoughFor(req.tilt, req.moments)
+                        if (!wanted()) null
+                        else if (c != null && c.complete && Math.abs(c.startMs - t) < LoopSupport.SAME_SCAN_MS) c
+                        else ChunkTracker.downloadVolume(s, chunks, dlPool, { wanted() }, req.moments, e)
+                    })
+                }
+                for (f in newestFirst) {
+                    tasks.add(if (covered(f.timeMs)) null else loopPool.submit<Volume?> {
+                        if (!wanted()) return@submit null
+                        val c = complete
+                        if (c != null && c.complete && Math.abs(c.startMs - f.timeMs) < LoopSupport.SAME_SCAN_MS) c   // in memory already
+                        else try {
+                            val e = LoopSupport.enoughFor(req.tilt, req.moments)
+                            readCachedOrDownload(f, s, g, ChunkTracker.SKIP, req.moments) { b -> loopWanted !== req || e(b) }
                         } catch (e: Exception) {
                             RfLog.w("loop frame ${f.name} failed: ${e.message}")
                             if (current(g)) loopError = friendly(e)
                             null
                         }
-                        if (v != null && current(g) && loopWanted === req) {
-                            val fr = LoopFrame(v.startMs, req.tilt, req.moments, LoopSupport.trimTo(v, req.tilt, req.moments))
-                            if (fr.volume.sweeps.isNotEmpty()) synchronized(this) { if (current(g)) frames = LoopSupport.merge(frames, fr, req.previous + 3) }
-                        }
+                    })
+                }
+                for (task in tasks) {
+                    if (!wanted()) break
+                    val v = try { task?.get() } catch (e: Exception) { null }
+                    if (v != null && wanted()) {
+                        val fr = LoopFrame(v.startMs, req.tilt, req.moments, LoopSupport.trimTo(v, req.tilt, req.moments))
+                        if (fr.volume.sweeps.isNotEmpty()) synchronized(this) { if (current(g)) frames = LoopSupport.merge(frames, fr, req.previous + 3) }
                     }
                     if (!current(g)) break
                     loopReady++
                     post { listener?.onFrames() }
                 }
+                if (!wanted()) tasks.forEach { it?.cancel(false) }
                 if (current(g) && loopWanted === req && running) {
                     loopReady = 0; loopTotal = 0
                     loopDone = req
@@ -664,6 +776,8 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
         gen.incrementAndGet()
         loopWanted = null
         pool.shutdownNow()
+        dlPool.shutdownNow()
+        loopPool.shutdownNow()
         sched.shutdownNow()
         feedPool.shutdownNow()
     }

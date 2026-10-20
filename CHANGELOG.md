@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.8.0 – 2026-10-19
+
+* **Faster, more reliable radar downloads.**
+  * **The newest scan shows up tilt by tilt.** Picking a radar draws the lowest tilt as soon as it has downloaded
+    instead of waiting for the whole volume.
+  * **Previous scans download several at a time** (three side by side, each stopping once it has the tilts on
+    screen), so Play is ready much sooner.
+  * **No more gap before the live scan.** The archive runs 5–15 minutes behind; the scans in between now come from
+    the live feed, so the loop and the ◀ button reach right up to now.
+  * **Live data finds the newest scan quicker.** It starts from the last volume it saw and checks the next few in
+    one go, falling back to a parallel search; it checks for new tilts every 8 seconds (was 12) and downloads all
+    waiting pieces at once.
+  * **Recovers by itself** when a radar skips a volume number or restarts, instead of waiting on a scan that never
+    comes.
+  * Connections are reused between downloads, and the archive list asks only for the last hour or so of files
+    (and is shared between the newest scan and the loop).
+
 ## 1.7.1 – 2026-10-15
 
 * **Severe, Winter and Tropical each have their own page** under Layers, so the list isn't one long scroll.

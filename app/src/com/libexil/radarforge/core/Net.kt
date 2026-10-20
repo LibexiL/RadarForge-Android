@@ -6,9 +6,24 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
-/** Plain HTTPS GETs (HttpURLConnection works the same on Android and the JVM). */
+/**
+ * Plain HTTPS GETs (HttpURLConnection works the same on Android and the JVM).
+ *
+ * Connections are kept open and reused: a response that has been read to the end goes back to the
+ * connection pool when its stream is closed, so the next request to the same server skips the TCP and TLS
+ * handshakes (often 200-400 ms each on mobile data). Only a response that is abandoned part-way is
+ * disconnected.
+ */
 object Net {
     var userAgent = "RadarForge-Android/1.0 (github.com/LibexiL)"
+
+    init {
+        // more idle connections kept per server (the default 5 is too few for parallel chunk downloads)
+        try {
+            if (System.getProperty("http.maxConnections") == null) System.setProperty("http.maxConnections", "12")
+            System.setProperty("http.keepAlive", "true")
+        } catch (_: Exception) {}
+    }
 
     class HttpError(val code: Int, url: String) : IOException("HTTP $code for $url")
 
@@ -24,10 +39,21 @@ object Net {
         if (range > 0) c.setRequestProperty("Range", "bytes=$range-")
         val code = c.responseCode
         if (code !in 200..299) {
-            c.disconnect()
+            drainError(c)
             throw HttpError(code, url)
         }
         return c
+    }
+
+    /** Reads a small error body to the end so the connection stays usable (a big one: just disconnect). */
+    private fun drainError(c: HttpURLConnection) {
+        try {
+            val len = c.contentLengthLong
+            val es = c.errorStream
+            if (es != null && len in 0..65_536) es.use { it.readBytes() } else c.disconnect()
+        } catch (_: Exception) {
+            c.disconnect()
+        }
     }
 
     /** The response body, unzipped if the server gzipped it. */
@@ -42,9 +68,11 @@ object Net {
             try {
                 val c = open(url, timeoutMs, accept = accept)
                 try {
+                    // read to the end and close: the connection is then reused for the next request
                     return stream(c).use { it.readBytes() }
-                } finally {
+                } catch (e: IOException) {
                     c.disconnect()
+                    throw e
                 }
             } catch (e: HttpError) {
                 if (e.code in 400..499) throw e        // missing / forbidden: retrying won't help
@@ -78,8 +106,9 @@ object Net {
                 }
                 try {
                     return c.inputStream.use { it.readBytes() }
-                } finally {
+                } catch (e: IOException) {
                     c.disconnect()
+                    throw e
                 }
             } catch (e: HttpError) {
                 if (e.code in 400..499) throw e

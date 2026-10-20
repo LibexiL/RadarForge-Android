@@ -2154,7 +2154,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         const val REQ_LOCATION_LIVE = 13
         const val REQ_IMPORT_PAL = 21
         /** Bump to show the "what's new" sheet once after an update. */
-        const val WHATS_NEW = "1.7.1"
+        const val WHATS_NEW = "1.8.0"
         private val TRAIL_RE = Regex("trail(\\d+)")
     }
 }
