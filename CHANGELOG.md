@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.9.0 – 2026-10-21
+
+* **Warnings come in as fast as possible.**
+  * Tornado, severe thunderstorm, flash flood, extreme wind, marine, snow squall and dust storm warnings (and
+    tornado / severe watches) are **checked every 10 seconds** on their own (a small download). Before, every alert
+    was checked once every 90 seconds.
+  * They're also checked every 15 seconds in **Iowa State's live warning feed**, which reads the NWS's own text feed
+    and often has a new warning a minute or more before the NWS alert service. Whichever source has it first puts it
+    on the map, and when Iowa State shows a warning upgraded (a tornado warning becoming observed), the higher threat
+    shows straight away.
+  * Everything else is checked every minute (was 90 s).
+  * A warning for your location alerts you once, whichever feed it showed up in first.
+* **Live radar starts quicker:** the app remembers each radar's place in its numbered scans between launches, so
+  the newest scan is found in one quick round of checks.
+
 ## 1.8.0 – 2026-10-19
 
 * **Faster, more reliable radar downloads.**

@@ -238,6 +238,67 @@ object Alerts {
 
     const val URL_ALL = "https://api.weather.gov/alerts/active?status=actual"
 
+    /** The warnings that can't wait: checked on their own every few seconds (a small download). */
+    val URGENT_EVENTS = listOf("Tornado Warning", "Severe Thunderstorm Warning", "Flash Flood Warning",
+        "Extreme Wind Warning", "Special Marine Warning", "Snow Squall Warning", "Dust Storm Warning",
+        "Tornado Watch", "Severe Thunderstorm Watch")
+    private val URGENT_SET = URGENT_EVENTS.toSet() + setOf("Tornado Emergency", "Flash Flood Emergency")
+    val URL_URGENT: String
+        get() = "https://api.weather.gov/alerts/active?status=actual&event=" +
+            URGENT_EVENTS.joinToString(",") { java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20") }
+
+    /** Iowa State's live storm-based warnings: it reads the NWS text feed directly, so a new warning is often
+     *  there a minute or more before api.weather.gov lists it. */
+    private val IEM_SBW_PHENOMENA = setOf("TO", "SV", "FF", "MA", "EW", "SQ", "DS")
+
+    /** The storm-based warnings in force now from Iowa State (one per warning: its newest polygon). */
+    fun iemActive(json: String, nowMs: Long = System.currentTimeMillis()): List<Alert> {
+        val newest = HashMap<String, Alert>()
+        for (a in parseIem(json)) {
+            val ph = a.trackKey.split(".").getOrNull(1) ?: continue
+            if (ph !in IEM_SBW_PHENOMENA || a.action.uppercase() in setOf("CAN", "EXP", "UPG")) continue
+            if (a.expiresMs in 1..nowMs) continue
+            val k = eventKey(a.trackKey)
+            val old = newest[k]
+            if (old == null || a.validFromMs > old.validFromMs) newest[k] = a
+        }
+        return newest.values.toList()
+    }
+
+    private fun Alert.copyWith(variant: String = this.variant, event: String = this.event, rings: List<FloatArray> = this.rings,
+                               tags: List<String> = this.tags, headline: String = this.headline,
+                               description: String = this.description, instruction: String = this.instruction,
+                               area: String = this.area, office: String = this.office) =
+        Alert(id, event, variant, STYLES[event] ?: style, rings, sentMs, expiresMs, headline, description, instruction,
+            area, office, tags, trackKey, action, validFromMs, validToMs)
+
+    /** One list from the live sources: the urgent warnings from the quick check when it is newer than the full
+     *  list; a warning Iowa State has that the NWS service doesn't list yet is added, and one Iowa State shows
+     *  upgraded (a tornado warning becoming observed) takes the higher threat until the NWS catches up. */
+    fun merge(full: List<Alert>, fast: List<Alert>?, fastNewer: Boolean, iem: List<Alert>): List<Alert> {
+        val out = ArrayList<Alert>()
+        if (fast != null && fastNewer) {
+            full.filterTo(out) { it.event !in URGENT_SET }
+            out.addAll(fast)
+        } else out.addAll(full)
+        val at = HashMap<String, Int>()
+        out.forEachIndexed { i, a -> at[eventKey(a.trackKey)] = i }
+        for (a in iem) {
+            val k = eventKey(a.trackKey)
+            val i = at[k]
+            val pri = VARIANTS[a.variant]?.priority ?: 0f
+            if (i == null) {
+                out.add(a.copyWith(headline = "From Iowa State's live feed (the NWS alert service hasn't listed it yet)"))
+                at[k] = out.size - 1
+            } else if (pri > (VARIANTS[out[i].variant]?.priority ?: 0f)) {
+                val nws = out[i]
+                out[i] = nws.copyWith(variant = a.variant, event = a.event, rings = a.rings, tags = a.tags.ifEmpty { nws.tags })
+            }
+        }
+        out.sortBy { VARIANTS[it.variant]?.priority ?: 0f }
+        return out
+    }
+
     /** Active alerts of the kinds drawn (filtering on the server keeps the download small). */
     val URL: String
         get() = "https://api.weather.gov/alerts/active?status=actual&event=" +

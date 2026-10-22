@@ -16,6 +16,32 @@ fun registerFeeds() {
     Extra.all.add("SPC outlook + MCD" to ::spc)
     Extra.all.add("measure: bearing, destination, ETAs" to ::measure)
     Extra.all.add("warning tracking key (VTEC)" to ::vtec)
+    Extra.all.add("fastest warnings: three sources merged" to ::warningMerge)
+}
+
+private fun nwsAlert(key: String, event: String = "Tornado Warning", variant: String = "TOR") =
+    Alert("urn:$key", event, variant, Alerts.STYLES.getValue(event), listOf(floatArrayOf(-97.7f, 35.1f, -97.3f, 35.1f, -97.3f, 35.4f, -97.7f, 35.1f)),
+        1000L, Long.MAX_VALUE / 2, "head", "text", "", "area", "Norman OK", emptyList(), key, "NEW")
+
+private fun warningMerge() {
+    val ring = "[[-97.7,35.1],[-97.3,35.1],[-97.3,35.4],[-97.7,35.1]]"
+    fun feat(id: Int, status: String, extra: String = "") = """{"type":"Feature","geometry":{"type":"Polygon","coordinates":[$ring]},
+        "properties":{"phenomena":"TO","significance":"W","wfo":"OUN","eventid":$id,"status":"$status","issue":"2026-05-20T20:00:00Z",
+        "expire":"2026-05-20T20:45:00Z","polygon_begin":"2026-05-20T20:05:00Z","polygon_end":"2026-05-20T20:45:00Z"$extra}}"""
+    val js = """{"type":"FeatureCollection","features":[${feat(7, "NEW")},${feat(1, "CON", ",\"tornadotag\":\"OBSERVED\"")},${feat(9, "CAN")}]}"""
+    val now = Time.parseIso("2026-05-20T20:10:00Z")
+    val iem = Alerts.iemActive(js, now)
+    ok(iem.map { Alerts.eventKey(it.trackKey) }.sorted() == listOf("OUN.TO.W.1", "OUN.TO.W.7"), "iem active: ${iem.map { it.trackKey }}")
+    val full = listOf(nwsAlert("KOUN.TO.W.0001"), nwsAlert("KOUN.SV.W.0002", "Severe Thunderstorm Warning", "SVR"))
+    val fast = listOf(nwsAlert("KOUN.TO.W.0001"), nwsAlert("KOUN.SV.W.0003", "Severe Thunderstorm Warning", "SVR"))
+    val out = Alerts.merge(full, fast, true, iem)
+    val byKey = out.associateBy { Alerts.eventKey(it.trackKey) }
+    ok("OUN.SV.W.3" in byKey && "OUN.SV.W.2" !in byKey, "quick check replaces the urgent ones: ${byKey.keys}")
+    ok(byKey["OUN.TO.W.7"]?.headline?.contains("Iowa State") == true, "iem-only warning added")
+    ok(byKey["OUN.TO.W.1"]?.variant == "TORR" && byKey["OUN.TO.W.1"]?.description == "text", "upgrade keeps NWS text")
+    val stale = Alerts.merge(full, fast, false, emptyList())
+    ok(stale.map { it.trackKey } .sorted() == full.map { it.trackKey }.sorted(), "an older quick check is ignored")
+    ok(Alerts.URL_URGENT.contains("Tornado%20Warning,Severe%20Thunderstorm%20Warning"), "urgent url")
 }
 
 // a trimmed copy of www.spotternetwork.org/feeds/gr.txt (phone / e-mail replaced)

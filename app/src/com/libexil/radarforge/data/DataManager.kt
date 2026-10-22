@@ -62,10 +62,11 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
     // never makes the live feed wait
     private val dlPool = Executors.newFixedThreadPool(6, daemon("rf-dl"))
     private val loopPool = Executors.newFixedThreadPool(3, daemon("rf-loop"))
-    private val sched = Executors.newScheduledThreadPool(2, daemon("rf-poll"))
+    private val sched = Executors.newScheduledThreadPool(4, daemon("rf-poll"))     // (live radar + three warning checks)
     // storm reports, chasers and SPC have their own threads so a slow site never holds up the radar
     private val feedPool = Executors.newFixedThreadPool(2, daemon("rf-feed"))
     private val cacheDir = File(ctx.cacheDir, "l2").apply { mkdirs() }
+    init { ChunkTracker.useStore(File(ctx.filesDir, "live_volumes.txt")) }
 
     @Volatile var site = ""
         private set
@@ -172,6 +173,8 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
         main.removeCallbacks(loopRetry)              // the loop job itself stops at the next scan
         liveTask?.cancel(false); liveTask = null
         alertTask?.cancel(false); alertTask = null
+        fastTask?.cancel(false); fastTask = null
+        iemTask?.cancel(false); iemTask = null
         feedTask?.cancel(false); feedTask = null
     }
 
@@ -568,11 +571,31 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
     }
 
     // ------------------------------------------------------------------ warnings
+    // three live sources, merged: every kind drawn once a minute, the urgent ones every 10 s from the NWS and every
+    // 15 s from Iowa State (whichever has a new warning first puts it on the map)
+    @Volatile private var alertsFull: List<Alert> = emptyList()
+    @Volatile private var alertsFast: List<Alert>? = null
+    @Volatile private var alertsIem: List<Alert> = emptyList()
+    @Volatile private var fullAtMs = 0L
+    @Volatile private var fastAtMs = 0L
+    private var fastTask: java.util.concurrent.ScheduledFuture<*>? = null
+    private var iemTask: java.util.concurrent.ScheduledFuture<*>? = null
+
+    private fun publishAlerts() {
+        val a = synchronized(this) { Alerts.merge(alertsFull, alertsFast, fastAtMs >= fullAtMs, alertsIem) }
+        alerts = a
+        alertsTime = System.currentTimeMillis()
+        post { listener?.onAlerts() }
+    }
+
     private fun startAlerts() {
         alertTask?.cancel(false)
+        fastTask?.cancel(false)
+        iemTask?.cancel(false)
         alertTask = sched.scheduleWithFixedDelay({
             if (!wantAlerts) return@scheduleWithFixedDelay
             try {
+                val t = System.currentTimeMillis()
                 val json = try {
                     if (alertsFilterRejected) throw Net.HttpError(400, Alerts.URL)
                     Net.getText(Alerts.URL, 30_000, "application/geo+json")
@@ -584,15 +607,33 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
                     Net.getText(Alerts.URL_ALL, 45_000, "application/geo+json")
                 }
                 val a = Alerts.parse(json, countyRings)
-                alerts = a
-                alertsTime = System.currentTimeMillis()
+                synchronized(this) { alertsFull = a; fullAtMs = t }
                 RfLog.i("warnings: ${a.size}")
-                post { listener?.onAlerts() }
+                publishAlerts()
             } catch (e: Throwable) {
                 RfLog.w("warnings failed: $e")
             }
             loadAlertHistory(false)
-        }, 0, 90, TimeUnit.SECONDS)
+        }, 0, 60, TimeUnit.SECONDS)
+        fastTask = sched.scheduleWithFixedDelay({
+            if (!wantAlerts || fullAtMs == 0L || alertsFilterRejected) return@scheduleWithFixedDelay
+            try {
+                val t = System.currentTimeMillis()
+                val a = Alerts.parse(Net.getText(Alerts.URL_URGENT, 20_000, "application/geo+json", attempts = 1), countyRings)
+                synchronized(this) { alertsFast = a; fastAtMs = t }
+                publishAlerts()
+            } catch (e: Throwable) {
+                // (the next quick check is seconds away; the full list still comes every minute)
+            }
+        }, 10, 10, TimeUnit.SECONDS)
+        iemTask = sched.scheduleWithFixedDelay({
+            if (!wantAlerts || fullAtMs == 0L) return@scheduleWithFixedDelay
+            try {
+                val a = Alerts.iemActive(Net.getText(Alerts.IEM_SBW, 20_000, attempts = 1))
+                synchronized(this) { alertsIem = a }
+                publishAlerts()
+            } catch (e: Throwable) {}
+        }, 5, 15, TimeUnit.SECONDS)
     }
 
     /** The warnings of the previous scans' span (Iowa State), fetched again every few minutes while there are

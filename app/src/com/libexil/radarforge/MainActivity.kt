@@ -1991,12 +1991,14 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             !it.isWatch && Alerts.group(it.event) in setOf("tornado", "severe", "flood") && it.action !in setOf("CAN", "EXP") &&
                 (it.expiresMs == 0L || it.expiresMs > now) && it.contains(loc.latitude, loc.longitude)
         }
-        val fresh = hits.filter { h -> notified[h.trackKey].let { it == null || prio(h) > it.first } }
+        // (keyed by the warning itself, so one first seen in Iowa State's feed doesn't alert again when the NWS lists it)
+        fun key(a: Alert) = Alerts.eventKey(a.trackKey)
+        val fresh = hits.filter { h -> notified[key(h)].let { it == null || prio(h) > it.first } }
         if (fresh.isEmpty()) return
         notified.entries.removeAll { it.value.second < now - 3_600_000L }
         for (h in hits) {
-            val old = notified[h.trackKey]
-            notified[h.trackKey] = maxOf(prio(h), old?.first ?: 0f) to (if (h.expiresMs > 0) h.expiresMs else now + 2 * 3_600_000L)
+            val old = notified[key(h)]
+            notified[key(h)] = maxOf(prio(h), old?.first ?: 0f) to (if (h.expiresMs > 0) h.expiresMs else now + 2 * 3_600_000L)
         }
         prefs.notifiedWarnings = notified
         val top = fresh.maxByOrNull { prio(it) } ?: return
@@ -2154,7 +2156,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         const val REQ_LOCATION_LIVE = 13
         const val REQ_IMPORT_PAL = 21
         /** Bump to show the "what's new" sheet once after an update. */
-        const val WHATS_NEW = "1.8.0"
+        const val WHATS_NEW = "1.9.0"
         private val TRAIL_RE = Regex("trail(\\d+)")
     }
 }

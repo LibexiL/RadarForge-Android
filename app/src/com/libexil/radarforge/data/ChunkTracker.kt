@@ -16,8 +16,30 @@ import java.util.concurrent.Future
 class ChunkTracker(val site: String, private val pool: ExecutorService) {
     companion object {
         val SKIP = setOf("CFP")
-        /** The last volume number seen per radar (this session): the next search starts there. */
+        /** The last volume number seen per radar: the next search starts there (kept between launches in [store]). */
         private val lastVolume = ConcurrentHashMap<String, Int>()
+        @Volatile private var store: java.io.File? = null
+
+        /** Where the volume numbers are kept between launches (read once now). */
+        fun useStore(f: java.io.File) {
+            store = f
+            try {
+                if (f.exists()) for (line in f.readLines()) {
+                    val p = line.split('=')
+                    if (p.size == 2) p[1].trim().toIntOrNull()?.let { lastVolume.putIfAbsent(p[0].trim(), it) }
+                }
+            } catch (_: Exception) {}
+        }
+
+        private fun remember(site: String, n: Int) {
+            if (lastVolume.put(site, n) == n) return
+            val f = store ?: return
+            try {
+                val tmp = java.io.File(f.path + ".tmp")
+                tmp.writeText(lastVolume.entries.joinToString("\n") { "${it.key}=${it.value}" })
+                tmp.renameTo(f)
+            } catch (_: Exception) {}
+        }
 
         /** Waiting this long for the next volume to appear means the numbering moved on: look again. */
         const val WAIT_NEW_MS = 4 * 60_000L
@@ -82,7 +104,7 @@ class ChunkTracker(val site: String, private val pool: ExecutorService) {
     private fun find(): Int? {
         val hint = volume ?: lastVolume[site]
         val n = (if (hint != null) S3.findLatestVolumeNear(site, hint) else null) ?: S3.findLatestVolume(site)
-        if (n != null) lastVolume[site] = n
+        if (n != null) remember(site, n)
         return n
     }
 
@@ -141,7 +163,7 @@ class ChunkTracker(val site: String, private val pool: ExecutorService) {
         }
         if (!added) return null
         lastProgress = System.currentTimeMillis()
-        lastVolume[site] = vol
+        remember(site, vol)
         val v = builder.build(site)
         v.complete = complete
         if (complete) {
