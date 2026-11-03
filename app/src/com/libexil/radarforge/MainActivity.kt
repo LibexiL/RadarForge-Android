@@ -29,6 +29,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.OpenableColumns
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -77,6 +78,8 @@ import com.libexil.radarforge.ui.Icon
 import com.libexil.radarforge.ui.IconView
 import com.libexil.radarforge.ui.MapState
 import com.libexil.radarforge.ui.OverlayView
+import com.libexil.radarforge.ui.PopHost
+import com.libexil.radarforge.ui.PopUi
 import com.libexil.radarforge.ui.SheetHost
 import com.libexil.radarforge.ui.Themes
 import com.libexil.radarforge.ui.W
@@ -173,10 +176,11 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     private lateinit var siteSub: TextView
     private lateinit var busy: ProgressBar
     private lateinit var warnBtn: IconView
-    private lateinit var productRow: LinearLayout
-    private val productChips = HashMap<Product, W.Chip>()
-    private lateinit var tiltChip: W.Chip
-    private lateinit var panelsBtn: IconView
+    lateinit var productBtn: LinearLayout
+    lateinit var tiltBtn: LinearLayout
+    lateinit var moreBtn: IconView
+    lateinit var pops: PopHost
+    lateinit var panelsBtn: IconView
     private lateinit var loopBtn: IconView
     private lateinit var loopRow: LinearLayout
     private lateinit var loopSeek: SeekBar
@@ -328,7 +332,6 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         super.onConfigurationChanged(newConfig)
         // the phone switched between light and dark mode
         if (prefs.followSystemTheme && currentTheme().name != C.themeName) { restyle(); return }
-        arrangeBottomBar()
         // layout listeners recompute the map area; just redraw
         root.post { updateArea(); requestRender() }
     }
@@ -344,6 +347,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         when {
+            pops.isOpen -> pops.close()
             sheets.isOpen -> sheets.close()
             overlay.inspectKm != null -> overlay.hideInspector()
             models.active -> setViewMode("radar")
@@ -543,52 +547,70 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         }
         root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
 
-        // ---- top bar: site + status, warnings, layers, menu
+        // ---- top: floating pills over the map (radar + status, Radar | Models, warnings / layers / more)
         topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(C.panel)
-            setPadding(dpi(6f), dpi(4f), dpi(2f), dpi(4f))
-            elevation = dp(4f)
+            setPadding(dpi(10f), dpi(8f), dpi(10f), dpi(4f))
         }
         val siteBlock = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dpi(10f), dpi(5f), dpi(10f), dpi(5f))
-            background = ripple(null, rounded(Color.WHITE, dp(10f)))
+            setPadding(dpi(12f), dpi(6f), dpi(12f), dpi(6f))
+            background = ripple(PopUi.glass(this@MainActivity, 16f), rounded(Color.WHITE, dp(16f)))
+            elevation = dp(4f)
             isClickable = true
             setOnClickListener { if (models.active) SheetsWx.models(this@MainActivity) else Sheets.sites(this@MainActivity) }
         }
         val titleRow = W.hRow(this)
-        siteTitle = W.text(this, "RadarForge", 19f, C.text, true)
+        val narrowTop = resources.configuration.screenWidthDp < 390
+        siteTitle = W.text(this, "RadarForge", 17f, C.text, true).apply {
+            isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
+            maxWidth = dpi(if (narrowTop) 84f else 120f)
+        }
         titleRow.addView(siteTitle)
-        titleRow.addView(IconView(this, Icon.DOWN, C.dim), LinearLayout.LayoutParams(dpi(22f), dpi(22f)))
+        titleRow.addView(IconView(this, Icon.DOWN, C.dim), LinearLayout.LayoutParams(dpi(18f), dpi(18f)))
         busy = ProgressBar(this).apply {
             isIndeterminate = true
             indeterminateTintList = android.content.res.ColorStateList.valueOf(C.accent)
             visibility = View.GONE
         }
-        titleRow.addView(busy, LinearLayout.LayoutParams(dpi(16f), dpi(16f)).apply { leftMargin = dpi(6f) })
+        titleRow.addView(busy, LinearLayout.LayoutParams(dpi(14f), dpi(14f)).apply { leftMargin = dpi(4f) })
         siteBlock.addView(titleRow)
-        siteSub = W.text(this, "Loading map…", 12.5f, C.dim).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END }
-        siteBlock.addView(siteSub, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dpi(2f) })
-        topBar.addView(siteBlock, LinearLayout.LayoutParams(0, -2, 1f))
+        siteSub = W.text(this, "Loading map…", 11.5f, C.dim).apply {
+            isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
+            maxWidth = dpi(if (narrowTop) 90f else 132f)
+        }
+        siteBlock.addView(siteSub)
+        topBar.addView(siteBlock, LinearLayout.LayoutParams(-2, -2))
+        topBar.addView(W.weightSpace(this))
         topBar.addView(buildViewPill())
+        val icons = W.hRow(this, 0f).apply {
+            background = PopUi.glass(this@MainActivity, 16f)
+            elevation = dp(4f)
+            setPadding(dpi(2f), dpi(2f), dpi(2f), dpi(2f))
+        }
         warnBtn = W.iconButton(this, Icon.WARNING, "Warnings") { Sheets.warnings(this) }
-        topBar.addView(warnBtn)
-        topBar.addView(W.iconButton(this, Icon.LAYERS, "Layers") { if (models.active) SheetsWx.models(this) else SheetsWx.layers(this) })
-        topBar.addView(W.iconButton(this, Icon.SLIDERS, "Settings") { Sheets.settings(this) }.apply {
-            setOnLongClickListener { Sheets.themes(this@MainActivity); true }
-        })
+        val ib = dpi(if (narrowTop) 36f else 40f)
+        icons.addView(warnBtn, LinearLayout.LayoutParams(ib, ib))
+        icons.addView(W.iconButton(this, Icon.LAYERS, "Layers") { if (models.active) SheetsWx.models(this) else SheetsWx.layers(this) },
+            LinearLayout.LayoutParams(ib, ib))
+        moreBtn = W.iconButton(this, Icon.DOTS, "More: settings, themes, guides") { Pops.more(this) }.apply {
+            setOnLongClickListener { Sheets.settings(this@MainActivity); true }
+        }
+        icons.addView(moreBtn, LinearLayout.LayoutParams(ib, ib))
+        topBar.addView(icons, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dpi(6f) })
         root.addView(topBar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
 
-        // ---- bottom bar: loop row, products, tilt + tools
+        // ---- bottom: tool / loop cards and one floating dock (product, tilt | panels, loop, tools)
         bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(C.panel)
-            setPadding(0, dpi(4f), 0, dpi(4f))
-            elevation = dp(4f)
+            setPadding(dpi(10f), 0, dpi(10f), dpi(10f))
+            clipToPadding = false
         }
-        loopRow = W.hRow(this).apply { setPadding(dpi(2f), dpi(2f), dpi(4f), dpi(2f)); visibility = View.GONE }
+        loopRow = W.hRow(this).apply {
+            setPadding(dpi(2f), dpi(2f), dpi(4f), dpi(2f)); visibility = View.GONE
+            background = PopUi.glass(this@MainActivity, 18f); elevation = dp(4f)
+        }
         loopRow.addView(W.iconButton(this, Icon.PREV, "Previous scan") { stepFrame(-1) }.apply {
             layoutParams = LinearLayout.LayoutParams(dpi(40f), dpi(40f))
         })
@@ -614,39 +636,46 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         loopRow.addView(loopSeek, LinearLayout.LayoutParams(0, -2, 1f))
         loopRow.addView(W.iconButton(this, Icon.CLOSE, "Stop loop") { stopLoop() })
         buildToolCard()
-        bottomBar.addView(toolCard)
-        bottomBar.addView(loopRow)
+        bottomBar.addView(toolCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dpi(8f) })
+        bottomBar.addView(loopRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dpi(8f) })
 
-        productRow = W.hRow(this).apply { setPadding(dpi(8f), dpi(4f), dpi(8f), dpi(4f)) }
-        for (p in Product.entries) {
-            val chip = W.chip(this, p.short) { setProduct(p) }
-            productChips[p] = chip
-            productRow.addView(chip, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dpi(6f) })
+        barRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = PopUi.glass(this@MainActivity, 22f)
+            elevation = dp(4f)
+            setPadding(dpi(6f), dpi(6f), dpi(6f), dpi(6f))
         }
-        productScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(productRow) }
-        barRow = LinearLayout(this)
-        barRow.addView(productScroll)
-
-        val tools = W.hRow(this).apply { setPadding(dpi(4f), 0, dpi(4f), 0) }
-        toolsRow = tools
-        tools.addView(W.iconButton(this, Icon.DOWN, "Lower tilt") { stepTilt(-1) })
-        tiltChip = W.chip(this, "0.5°") { Sheets.tilts(this) }
-        tools.addView(tiltChip, LinearLayout.LayoutParams(-2, -2))
-        tools.addView(W.iconButton(this, Icon.UP, "Higher tilt") { stepTilt(+1) })
-        tools.addView(W.weightSpace(this))
-        panelsBtn = W.iconButton(this, panelIcon(), "Panels") { cyclePanels() }
-        tools.addView(panelsBtn)
+        productBtn = dockPicker("BR", "Reflectivity", "Product: tap for all products, swipe to step through them") { Pops.product(this) }
+        productBtn.setOnTouchListener(swipeStepper(horizontal = true) { d -> stepProduct(d) })
+        barRow.addView(productBtn, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dpi(6f) })
+        tiltBtn = dockPicker("0.5°", "Tilt", "Tilt: tap for all tilts, swipe up or down to step") { Pops.tilt(this) }
+        tiltBtn.setOnTouchListener(swipeStepper(horizontal = false) { d -> stepTilt(d) })
+        barRow.addView(tiltBtn, LinearLayout.LayoutParams(-2, -2))
+        barRow.addView(W.weightSpace(this))
+        panelsBtn = W.iconButton(this, panelIcon(), "Panels: one, two or four") { Pops.panels(this) }
+        barRow.addView(panelsBtn, LinearLayout.LayoutParams(dpi(42f), dpi(42f)))
         loopBtn = W.iconButton(this, Icon.PLAY, "Loop the previous scans") { toggleLoop() }
-        tools.addView(loopBtn)
-        toolBtn = W.iconButton(this, Icon.RULER, "Measure distance / storm track") { if (overlay.tool == OverlayView.Tool.NONE) openTools() else closeTools() }
-        tools.addView(toolBtn)
-        locateBtn = W.iconButton(this, Icon.LOCATE, "My location (tap again to stop following)") { locateMe() }
-        tools.addView(locateBtn)
-        barRow.addView(tools)
+        barRow.addView(loopBtn, LinearLayout.LayoutParams(dpi(42f), dpi(42f)))
+        toolBtn = W.iconButton(this, Icon.PEN, "Tools: distance, storm track, pen, inspect") { Pops.tools(this) }
+        barRow.addView(toolBtn, LinearLayout.LayoutParams(dpi(42f), dpi(42f)))
         bottomBar.addView(barRow, LinearLayout.LayoutParams(-1, -2))
-        bottomBar.addView(models.buildBar(), LinearLayout.LayoutParams(-1, -2))
-        arrangeBottomBar()
+        val modelsBar = models.buildBar().apply {
+            background = PopUi.glass(this@MainActivity, 22f); elevation = dp(4f)
+            setPadding(paddingLeft, dpi(4f), paddingRight, dpi(4f))
+        }
+        bottomBar.addView(modelsBar, LinearLayout.LayoutParams(-1, -2))
         root.addView(bottomBar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+
+        // My location: a round button on the map, just above the dock
+        locateBtn = W.iconButton(this, Icon.LOCATE, "My location (tap again to stop following)") { locateMe() }.apply {
+            background = ripple(rounded(Themes.withAlpha(C.panel, 0xdc), dp(23f), Themes.withAlpha(C.text, 0x1c), dpi(1f)),
+                rounded(Color.WHITE, dp(23f)))
+            elevation = dp(4f)
+        }
+        root.addView(locateBtn, FrameLayout.LayoutParams(dpi(46f), dpi(46f), Gravity.BOTTOM or Gravity.END).apply {
+            rightMargin = dpi(12f); bottomMargin = dpi(150f)
+        })
 
         // learn mode: what the values under the cross-hair mean, floating just above the bottom bar
         learnCard = W.text(this, "", 13.5f, C.text).apply {
@@ -671,6 +700,8 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             setOnClickListener { visibility = View.GONE }
         }
         root.addView(hintCard, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply { leftMargin = dpi(12f); rightMargin = dpi(12f); topMargin = dpi(70f) })
+        pops = PopHost(this).apply { elevation = dp(7f) }      // pop-out menus: above the bars, below the sheets
+        root.addView(pops, FrameLayout.LayoutParams(-1, -1))
         sheets = SheetHost(this).apply { elevation = dp(8f) }   // above the bars (elevation 4dp)
         root.addView(sheets, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
@@ -690,13 +721,14 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     private fun buildViewPill(): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            background = rounded(C.button, dp(17f), C.border, dpi(1f))
-            setPadding(dpi(2f), dpi(2f), dpi(2f), dpi(2f))
+            background = PopUi.glass(this@MainActivity, 15f)
+            elevation = dp(4f)
+            setPadding(dpi(3f), dpi(3f), dpi(3f), dpi(3f))
         }
-        val narrow = resources.configuration.screenWidthDp < 380
-        fun seg(label: String, mode: String) = W.text(this, label, if (narrow) 12.5f else 13.5f, C.text, true).apply {
+        val narrow = resources.configuration.screenWidthDp < 390
+        fun seg(label: String, mode: String) = W.text(this, label, if (narrow) 11.5f else 12.5f, C.text, true).apply {
             gravity = Gravity.CENTER
-            setPadding(dpi(if (narrow) 9f else 12f), dpi(6f), dpi(if (narrow) 9f else 12f), dpi(6f))
+            setPadding(dpi(if (narrow) 7f else 10f), dpi(7f), dpi(if (narrow) 7f else 10f), dpi(7f))
             isClickable = true
             contentDescription = "Switch to the $label view"
             setOnClickListener { setViewMode(mode) }
@@ -711,7 +743,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         if (!::pillRadar.isInitialized) return
         val m = models.active
         for ((v, on) in listOf(pillRadar to !m, pillModels to m)) {
-            v.background = if (on) rounded(C.accent, dp(15f)) else null
+            v.background = if (on) rounded(C.accent, dp(12f)) else null
             v.setTextColor(if (on) C.accentText else C.text)
         }
     }
@@ -814,9 +846,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         }.apply { isDaemon = true }.start()
     }
     private lateinit var barRow: LinearLayout
-    private lateinit var productScroll: HorizontalScrollView
-    private lateinit var toolsRow: LinearLayout
-    private lateinit var toolBtn: IconView
+    lateinit var toolBtn: IconView
     private lateinit var locateBtn: IconView
 
     // ---------------------------------------------------------------- measuring tools
@@ -835,8 +865,10 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
 
     private fun buildToolCard() {
         toolCard = W.vCol(this).apply {
-            setPadding(dpi(10f), dpi(2f), dpi(4f), dpi(4f))
+            setPadding(dpi(12f), dpi(4f), dpi(4f), dpi(6f))
             visibility = View.GONE
+            background = PopUi.glass(this@MainActivity, 18f)
+            elevation = dp(4f)
         }
         val row = W.hRow(this)
         toolDistChip = W.chip(this, "Distance") { overlay.setTool(OverlayView.Tool.DISTANCE) }
@@ -905,6 +937,12 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             v.scaleX = if (on) 1.08f else 1f; v.scaleY = v.scaleX
         }
         penWidthChip.text = PEN_WIDTHS.firstOrNull { abs(it.first - prefs.penWidth) < 0.01f }?.second ?: "Medium"
+    }
+
+    /** Opens the tools with [t] picked (from the tools pop-out). */
+    fun openTool(t: OverlayView.Tool) {
+        lastTool = t
+        if (overlay.tool == OverlayView.Tool.NONE) openTools() else overlay.setTool(t)
     }
 
     private fun openTools() {
@@ -1022,30 +1060,25 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         toast("SRV storm motion set to ${from.toInt()}° at ${kts.toInt()} kts")
     }
 
-    /** Portrait: products above the tools. Landscape: one row, so the map keeps its height. */
-    private fun arrangeBottomBar() {
-        val wide = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-        barRow.orientation = if (wide) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
-        barRow.gravity = Gravity.CENTER_VERTICAL
-        productScroll.layoutParams = if (wide) LinearLayout.LayoutParams(0, -2, 1f) else LinearLayout.LayoutParams(-1, -2)
-        toolsRow.layoutParams = if (wide) LinearLayout.LayoutParams(-2, -2) else LinearLayout.LayoutParams(-1, -2)
-        // the spacer inside the tools row only makes sense when the row is full width
-        for (i in 0 until toolsRow.childCount) {
-            val v = toolsRow.getChildAt(i)
-            if (v.layoutParams is LinearLayout.LayoutParams && (v.layoutParams as LinearLayout.LayoutParams).weight > 0f) {
-                v.visibility = if (wide) View.GONE else View.VISIBLE
-            }
-        }
-    }
-
     private fun updateArea() {
-        val a = RectF(0f, topBar.bottom.toFloat(), root.width.toFloat(), bottomBar.top.toFloat())
+        // the map fills the window; the floating bars sit over it, so labels and legends keep clear of them
+        val a = RectF(0f, 0f, root.width.toFloat(), root.height.toFloat())
         if (a.height() <= 0 || a.width() <= 0) return
+        val top = topBar.bottom.toFloat()
+        val bottom = bottomBar.top.toFloat()
         (learnCard.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
             val want = root.height - bottomBar.top + dpi(8f)
             if (lp.bottomMargin != want) { lp.bottomMargin = want; learnCard.requestLayout() }
         }
-        if (a != state.area) {
+        (locateBtn.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+            // above the dock and the slim legend
+            val want = root.height - bottomBar.top + dpi(if (overlay.showLegend) 46f else 10f)
+            if (lp.bottomMargin != want) { lp.bottomMargin = want; locateBtn.requestLayout() }
+        }
+        val insetsChanged = overlay.insetTop != top || overlay.insetBottom != bottom
+        overlay.insetTop = top
+        overlay.insetBottom = bottom
+        if (a != state.area || insetsChanged) {
             state.area = a
             overlay.invalidate()
             requestRender()
@@ -1061,7 +1094,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
 
     // ---------------------------------------------------------------- user actions
-    private fun setProduct(p: Product) {
+    fun setProduct(p: Product) {
         val list = prefs.panelProducts.toMutableList()
         val i = state.activePanel.coerceIn(0, 3)
         list[i] = p
@@ -1074,13 +1107,94 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     }
 
     private fun refreshProductChips() {
+        if (!::productBtn.isInitialized) return
         val cur = prefs.panelProducts.getOrNull(state.activePanel) ?: Product.REF
-        for ((p, c) in productChips) c.selectedState = p == cur
+        setPicker(productBtn, cur.short, productName(cur))
     }
 
-    private fun cyclePanels() {
-        state.panelCount = when (state.panelCount) { 1 -> 2; 2 -> 4; else -> 1 }
-        prefs.panels = state.panelCount
+    /** The short name under the product code in the dock. */
+    fun productName(p: Product) = when (p) {
+        Product.REF -> "Reflectivity"; Product.VEL -> "Velocity"; Product.SRV -> "Storm-relative"
+        Product.SW -> "Spectrum width"; Product.ZDR -> "Diff. reflectivity"; Product.CC -> "Correlation"
+        Product.PHI -> "Diff. phase"; Product.PTYPE -> "Precip type"
+    }
+
+    /** Next / previous product in the active panel (swiping the product button). */
+    private fun stepProduct(d: Int) {
+        val all = Product.entries
+        val cur = prefs.panelProducts.getOrNull(state.activePanel) ?: Product.REF
+        setProduct(all[(all.indexOf(cur) + d + all.size) % all.size])
+    }
+
+    /** A two-line dock button: big value over a small caption, with a little caret. */
+    private fun dockPicker(value: String, caption: String, desc: String, onClick: () -> Unit): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dpi(11f), dpi(5f), dpi(8f), dpi(5f))
+            background = ripple(rounded(Themes.withAlpha(C.text, 0x10), dp(15f)), rounded(Color.WHITE, dp(15f)))
+            isClickable = true
+            contentDescription = desc
+            setOnClickListener { onClick() }
+            val col = W.vCol(this@MainActivity)
+            col.addView(W.text(this@MainActivity, value, 16f, C.text, true).apply { tag = "value"; includeFontPadding = false })
+            col.addView(W.text(this@MainActivity, caption, 10.5f, C.dim).apply { tag = "caption"; isSingleLine = true })
+            addView(col)
+            addView(IconView(this@MainActivity, Icon.UP, C.dim), LinearLayout.LayoutParams(dpi(16f), dpi(16f)).apply { leftMargin = dpi(5f) })
+        }
+
+    private fun setPicker(v: LinearLayout, value: String, caption: String) {
+        (v.findViewWithTag<TextView>("value"))?.text = value
+        (v.findViewWithTag<TextView>("caption"))?.text = caption
+    }
+
+    /** Shows the dock button of an open pop-out as pressed. */
+    fun markPicker(v: View?, open: Boolean) {
+        if (v == null) return
+        v.background = ripple(
+            if (open) rounded(Themes.withAlpha(C.accent, 0x2e), dp(15f), C.accent, dpi(1.5f)) else rounded(Themes.withAlpha(C.text, 0x10), dp(15f)),
+            rounded(Color.WHITE, dp(15f)))
+    }
+
+    /** A swipe across a dock button steps (product: sideways, tilt: up/down); a tap still opens its pop-out. */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun swipeStepper(horizontal: Boolean, step: (Int) -> Unit) = object : View.OnTouchListener {
+        var x0 = 0f; var y0 = 0f; var done = false
+        override fun onTouch(v: View, e: MotionEvent): Boolean {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { x0 = e.rawX; y0 = e.rawY; done = false }
+                MotionEvent.ACTION_MOVE -> {
+                    val d = if (horizontal) e.rawX - x0 else y0 - e.rawY      // up = higher tilt
+                    val cross = if (horizontal) e.rawY - y0 else e.rawX - x0
+                    if (abs(d) > dp(28f) && abs(d) > abs(cross)) {
+                        step(if (d > 0) 1 else -1)
+                        v.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+                        x0 = e.rawX; y0 = e.rawY      // keep swiping to keep stepping
+                        if (!done) { done = true; v.isPressed = false; v.parent?.requestDisallowInterceptTouchEvent(true) }
+                    }
+                    if (done) return true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (done) { v.isPressed = false; return true }
+            }
+            return false
+        }
+    }
+
+    /** A product's colour table as a strip for its pop-out tile. */
+    fun legendStrip(p: Product): android.graphics.Bitmap? = try {
+        val lut = palettes.table(p.palette).lut(128)
+        val px = IntArray(128) { i ->
+            val al = lut[i * 4 + 3].toInt() and 0xff
+            fun ch(k: Int) = ((lut[i * 4 + k].toInt() and 0xff) * al + 0x30 * (255 - al)) / 255
+            (0xff shl 24) or (ch(0) shl 16) or (ch(1) shl 8) or ch(2)
+        }
+        android.graphics.Bitmap.createBitmap(px, 128, 1, android.graphics.Bitmap.Config.ARGB_8888)
+    } catch (e: Exception) { null }
+
+    fun setPanels(n: Int) {
+        if (n == state.panelCount) return
+        state.panelCount = n
+        prefs.panels = n
         if (state.activePanel >= state.panelCount) state.activePanel = 0
         panelsBtn.icon = panelIcon()
         refreshProductChips()
@@ -1101,14 +1215,14 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
 
     private val loopRequestTask = Runnable { requestLoopFrames() }
 
-    private fun stepTilt(d: Int) {
+    fun stepTilt(d: Int) {
         if (tilts.isEmpty()) return
         val i = Tilts.closest(tilts, prefs.tilt)
         setTiltIndex((i + d).coerceIn(0, tilts.size - 1))
     }
 
     // ---------------------------------------------------------------- loop (previous scans)
-    private fun toggleLoop() {
+    fun toggleLoop() {
         if (!looping) {
             startLoop(play = true)
         } else {
@@ -1601,7 +1715,10 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         val newTilts = if (looping && frameIndex >= 0) tilts else tiltsOf(dm.complete ?: dm.live)
         if (newTilts.isNotEmpty()) tilts = newTilts
         val ti = Tilts.closest(tilts, prefs.tilt)
-        tiltChip.text = if (ti >= 0) tilts[ti].label else String.format(java.util.Locale.US, "%.1f°", prefs.tilt)
+        if (ti >= 0) {
+            val t = tilts[ti]
+            setPicker(tiltBtn, String.format(java.util.Locale.US, "%.1f°", t.elevation), if (t.scans.size > 1) "Tilt · ×${t.scans.size}" else "Tilt")
+        } else setPicker(tiltBtn, String.format(java.util.Locale.US, "%.1f°", prefs.tilt), "Tilt")
 
         val products = prefs.panelProducts
         val panelDraws = ArrayList<PanelDraw>()
@@ -2225,7 +2342,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         const val REQ_LOCATION_LIVE = 13
         const val REQ_IMPORT_PAL = 21
         /** Bump to show the "what's new" sheet once after an update. */
-        const val WHATS_NEW = "1.9.1"
+        const val WHATS_NEW = "1.10.0"
         private val TRAIL_RE = Regex("trail(\\d+)")
         /** Pen colours: yellow, red, white, cyan, magenta, green. */
         val PEN_COLORS = intArrayOf(0xffffd400.toInt(), 0xffff3b30.toInt(), 0xffffffff.toInt(), 0xff4fd8ff.toInt(),

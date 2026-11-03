@@ -94,7 +94,7 @@ fun ripple(base: android.graphics.drawable.Drawable?, mask: android.graphics.dra
 
 // ------------------------------------------------------------------------- icons
 enum class Icon { MORE, LAYERS, WARNING, PLAY, PAUSE, LOCATE, PANELS1, PANELS2, PANELS4, UP, DOWN, CLOSE, SEARCH, REFRESH, RADAR, CHECK, SLIDERS,
-    RULER, SHARE, STAR, STAR_ON, UNDO, TRASH, PREV, NEXT, PALETTE, BOOK }
+    RULER, SHARE, STAR, STAR_ON, UNDO, TRASH, PREV, NEXT, PALETTE, BOOK, PEN, TRACK, INSPECT, DOTS }
 
 /** Small vector icons drawn in code (no image resources needed). */
 class IconView(ctx: Context, icon: Icon, private var tint: Int = C.text) : View(ctx) {
@@ -160,6 +160,22 @@ class IconView(ctx: Context, icon: Icon, private var tint: Int = C.text) : View(
                 p.style = Paint.Style.FILL
                 c.drawCircle(15f, 6f, 2.6f, p); c.drawCircle(8f, 12f, 2.6f, p); c.drawCircle(13f, 18f, 2.6f, p)
             }
+            Icon.PEN -> {
+                path.moveTo(15f, 4.5f); path.lineTo(19.5f, 9f); path.lineTo(8.5f, 20f); path.lineTo(4f, 20f); path.lineTo(4f, 15.5f); path.close()
+                c.drawPath(path, p)
+                c.drawLine(12.5f, 7f, 17f, 11.5f, p)
+            }
+            Icon.TRACK -> {
+                c.drawCircle(6f, 18f, 2.6f, p)
+                c.drawLine(8f, 16f, 19f, 5f, p)
+                path.moveTo(12.5f, 5f); path.lineTo(19f, 5f); path.lineTo(19f, 11.5f); c.drawPath(path, p)
+            }
+            Icon.INSPECT -> {
+                c.drawCircle(10.5f, 10.5f, 7f, p)
+                c.drawLine(15.6f, 15.6f, 21f, 21f, p)
+                c.drawLine(10.5f, 7.5f, 10.5f, 13.5f, p); c.drawLine(7.5f, 10.5f, 13.5f, 10.5f, p)
+            }
+            Icon.DOTS -> { p.style = Paint.Style.FILL; for (x in floatArrayOf(5f, 12f, 19f)) c.drawCircle(x, 12f, 2.1f, p) }
             Icon.RULER -> {
                 // a ruler lying diagonally, with tick marks along its lower edge
                 val ux = 0.7071f; val uy = -0.7071f          // along the ruler

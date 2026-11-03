@@ -249,6 +249,11 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
     var tool = Tool.NONE
         private set
 
+    /** Screen y where the floating top bar ends and the bottom dock starts: labels and legends stay between. */
+    var insetTop = 0f
+    var insetBottom = Float.MAX_VALUE
+    private val safe = RectF()
+
     // ---- the pen: freehand drawings kept in latitude/longitude, so they stay put across radars and zooms
     class PenStroke(val ll: DoubleArray, val color: Int, val widthDp: Float)
     val penStrokes = ArrayList<PenStroke>()
@@ -319,6 +324,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
     private val tmpRect = RectF()
     private val occupied = ArrayList<RectF>()
     private val legendBitmaps = IdentityHashMap<ColorTable, Bitmap>()
+    private val legendClip = Path()
 
     // ---------------------------------------------------------------- gestures
     private val scroller = OverScroller(ctx)
@@ -785,8 +791,10 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
             }
             val info = panels.getOrNull(i)
             if (info != null) {
-                drawHeader(c, r, info)
-                if (showLegend) { if (info.legend != null) drawStepLegend(c, r, info.legend) else drawLegend(c, r, info) }
+                safe.set(r.left, maxOf(r.top, insetTop), r.right, minOf(r.bottom, insetBottom))
+                if (safe.height() < 80 * density) safe.set(r)
+                drawHeader(c, safe, info)
+                if (showLegend) { if (info.legend != null) drawStepLegend(c, safe, info.legend) else drawLegend(c, safe, info) }
                 inspectKm?.let { drawInspector(c, r, info, it) }
             }
             c.restore()
@@ -1104,25 +1112,34 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
     }
 
     private fun drawHeader(c: Canvas, r: RectF, p: PanelInfo) {
-        val pad = 7f * density
+        // one line: "KVNX BR 0.5°  00:13Z · 7:13 PM", and a second for a note ("scanning…")
+        val padX = 8f * density
+        val padY = 5f * density
+        val gap = 7f * density
         val w1 = headBold.measureText(p.title)
         val w2 = headSmall.measureText(p.subtitle)
+        val oneLine = w1 + gap + w2 + padX * 2 <= r.width() - 12 * density
         val w3 = if (p.note != null) headSmall.measureText(p.note) else 0f
-        val w = maxOf(w1, w2, w3) + pad * 2
-        val lines = if (p.note != null) 3 else 2
-        val h = pad * 2 + headBold.textSize + (lines - 1) * (headSmall.textSize + 4 * density)
-        tmpRect.set(r.left + 6 * density, r.top + 6 * density, r.left + 6 * density + w, r.top + 6 * density + h)
+        val w = (if (oneLine) w1 + gap + w2 else maxOf(w1, w2)).coerceAtLeast(w3) + padX * 2
+        val lineH = headSmall.textSize + 4 * density
+        val lines = (if (oneLine) 0 else 1) + (if (p.note != null) 1 else 0)
+        val h = padY * 2 + headBold.textSize + lines * lineH
+        tmpRect.set(r.left + 8 * density, r.top + 6 * density, r.left + 8 * density + w, r.top + 6 * density + h)
         fill.color = C.labelBg
-        c.drawRoundRect(tmpRect, 8 * density, 8 * density, fill)
-        var y = tmpRect.top + pad + headBold.textSize * 0.85f
-        c.drawText(p.title, tmpRect.left + pad, y, headBold)
-        y += headSmall.textSize + 4 * density
-        c.drawText(p.subtitle, tmpRect.left + pad, y, headSmall)
+        c.drawRoundRect(tmpRect, 9 * density, 9 * density, fill)
+        var y = tmpRect.top + padY + headBold.textSize * 0.85f
+        c.drawText(p.title, tmpRect.left + padX, y, headBold)
+        if (oneLine) {
+            c.drawText(p.subtitle, tmpRect.left + padX + w1 + gap, y, headSmall)
+        } else {
+            y += lineH
+            c.drawText(p.subtitle, tmpRect.left + padX, y, headSmall)
+        }
         if (p.note != null) {
-            y += headSmall.textSize + 4 * density
+            y += lineH
             val old = headSmall.color
             headSmall.color = C.noteText
-            c.drawText(p.note, tmpRect.left + pad, y, headSmall)
+            c.drawText(p.note, tmpRect.left + padX, y, headSmall)
             headSmall.color = old
         }
         occupied.add(RectF(tmpRect))
@@ -1144,18 +1161,22 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         val ct = p.table
         if (ct.entries.isEmpty()) return
         val margin = 8f * density
-        val barH = 9f * density
-        val labelH = legendText.textSize + 4 * density
+        val barH = 6f * density
+        val labelH = legendText.textSize + 3 * density
         val box = RectF(r.left + margin, r.bottom - margin - barH - labelH - 6 * density, r.right - margin, r.bottom - margin)
         if (box.width() < 120 * density) return
         fill.color = C.labelBg
-        c.drawRoundRect(box, 7 * density, 7 * density, fill)
+        c.drawRoundRect(box, 9 * density, 9 * density, fill)
         val unit = legendUnits(p)
         val unitW = if (unit.isNotEmpty()) legendText.measureText(unit) + 10 * density else 0f
-        val bar = RectF(box.left + 8 * density, box.bottom - 5 * density - barH, box.right - 8 * density - unitW, box.bottom - 5 * density)
+        val bar = RectF(box.left + 9 * density, box.bottom - 5 * density - barH, box.right - 9 * density - unitW, box.bottom - 5 * density)
         val bmp = legendBitmap(ct)
         fill.isFilterBitmap = true
+        c.save()
+        legendClip.rewind(); legendClip.addRoundRect(bar, barH / 2, barH / 2, Path.Direction.CW)
+        c.clipPath(legendClip)
         c.drawBitmap(bmp, null, bar, fill)
+        c.restore()
         val lo = ct.vmin; val hi = ct.vmax
         val ty = bar.top - 4 * density
         if (ct.labels.isNotEmpty()) {

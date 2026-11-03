@@ -940,9 +940,12 @@ object Sheets {
         a.prefs.seenWhatsNew = MainActivity.WHATS_NEW
         val col = W.vCol(a)
         checkList(a, col, listOf(
-            "A pen: draw on the map to mark a storm, a hook or where you are going. Tap the ruler, then Pen. One finger draws, two fingers move and zoom. Pick a colour and width, undo or clear. Drawings stay where you put them when you zoom, switch radar or restart the app.",
-            "No more half-drawn radar: while a new sweep is still being scanned, the part the radar hasn't reached yet shows the previous sweep instead of a blank wedge.",
-            "Back from another app: the radar catches up to the newest scans straight away, so a panel showing the previous volume isn't left on an old one.",
+            "A cleaner, map-first look: the bars float over the map, so you see more radar. Everything sits in one dock at the bottom.",
+            "Pop-out menus: tap the product (BR, BV…) for every product with its colours, and smoothing and dealiasing right there. Tap the tilt for every tilt. Tap the panel button to pick one, two or four panels.",
+            "Swipe the product button sideways to step through products, and the tilt button up or down to step through tilts.",
+            "Tools (the pen button): distance, storm track, the pen and learn mode. The pen draws on the map: one finger draws, two fingers move and zoom.",
+            "The ⋯ button at the top holds settings, themes, the Severe / Winter / Tropical pages, sharing and the radar guide. My location is the round button on the map.",
+            "No more half-drawn radar, and the radar catches up straight away when you come back from another app.",
         ))
         val buttons = W.hRow(a)
         buttons.addView(W.button(a, "Try the pen") { a.sheets.close(); a.openPen() }, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = a.dpi(8f) })
@@ -960,7 +963,7 @@ object Sheets {
         val steps = listOf(
             "Pick a radar" to "Tap the radar name at the top, or a green square on the map. Live data starts straight away and keeps itself up to date.",
             "Move around" to "Drag to move, pinch to zoom, double-tap to zoom in, two-finger tap to zoom out. Press and hold to read the value under your finger.",
-            "Products and panels" to "Pick a product along the bottom (reflectivity, velocity, P-Type…); the arrows change the tilt. The panel button shows 2 or 4 linked panels. Play loops the previous scans.",
+            "Products and panels" to "Tap the product button at the bottom (BR, BV…) for every product, or swipe it sideways to step through them. The tilt button lists the tilts (swipe it up or down to step). The panel button shows 2 or 4 linked panels, and Play loops the previous scans.",
             "Warnings" to "Coloured outlines are NWS warnings: red tornado, magenta confirmed or PDS tornado, yellow severe thunderstorm, green flash flood. Winter and tropical warnings shade whole counties. Tap one to read it.",
             "Severe, Winter, Tropical" to "The Layers button opens a page for each kind of weather, with a one-tap setup, its switches and its model maps. The rest of Layers is the radar display and the map.",
             "Models" to "Tap Models at the top for forecast maps (HRRR, NAM, RAP, GFS). Quickest way in: Layers → Severe → Severe set shows CAPE, helicity, shear and STP. ◀ ▶ step the hours; Radar takes you back.",

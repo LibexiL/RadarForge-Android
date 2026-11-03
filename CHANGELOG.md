@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.10.0 – 2026-11-02
+
+**A cleaner, map-first look with pop-out menus.**
+
+* The top and bottom bars **float over the map** (see-through, rounded) instead of taking their own rows, so the
+  radar fills the screen. The panel label is one compact line and the colour legend is a slim strip; both keep
+  clear of the bars.
+* **One dock at the bottom** instead of two rows: product, tilt, panels, play and tools.
+* **Pop-out menus:**
+  * **Product:** every product with its full name and colours, plus smoothing (and dealiasing for velocity).
+    Swipe the product button sideways to step through products without opening it.
+  * **Tilt:** every tilt of the scan, with Lower / Higher buttons. Swipe the tilt button up or down to step.
+  * **Panels:** one, two or four, as pictures.
+  * **Tools:** distance, storm track, the pen and learn mode.
+  * **⋯ (top right):** settings, theme & colours, the Severe / Winter / Tropical pages, share a picture, the radar
+    guide and what's new. Long-press it for settings.
+* **My location** is a round button on the map, above the dock.
+
 ## 1.9.1 – 2026-11-02
 
 * **A pen for drawing on the map.** Tap the ruler, then **Pen**: one finger draws, two fingers still move and zoom
