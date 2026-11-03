@@ -239,6 +239,17 @@ class Prefs(ctx: Context) {
         set(v) = put { putString("notified_warnings", v.entries.joinToString(";") { "${it.key}~${it.value.first}~${it.value.second}" }) }
 
     // ---- measuring
+    /** The pen's drawings (OverlayView.penText) and its colour / width. */
+    var penStrokes: String
+        get() = s("pen_strokes", "")
+        set(v) = put { putString("pen_strokes", v) }
+    var penColor: Int
+        get() = p.getInt("pen_color", 0xffffd400.toInt())
+        set(v) = put { putInt("pen_color", v) }
+    var penWidth: Float
+        get() = p.getFloat("pen_width", 3.5f)
+        set(v) = put { putFloat("pen_width", v) }
+
     var trackMinutes: Int
         get() = p.getInt("track_minutes", 60).let { if (it in TRACK_MINUTES) it else 60 }
         set(v) = put { putInt("track_minutes", v) }

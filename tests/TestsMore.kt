@@ -15,6 +15,7 @@ fun registerMore() {
     Extra.all.add("sites" to ::sites)
     Extra.all.add("basemap read + project" to ::basemap)
     Extra.all.add("loop: read just enough" to ::loopEnough)
+    Extra.all.add("scan in progress over the previous sweep" to ::overPrevious)
     registerFeeds()
     registerLoop()
     registerData()
@@ -219,4 +220,30 @@ private fun releases() {
     ok(Releases.parse(js.replace("\"prerelease\":false", "\"prerelease\":true")) == null, "pre-releases are not offered")
     ok(Releases.parse("""{"tag_name":"v1.7.0","assets":[]}""")?.apkUrl == "", "release without an APK")
     ok(Releases.parse("not json") == null, "bad json")
+}
+
+/** A sweep of [n] one-degree rays starting at [from]°, every gate holding [code]. */
+private fun sweepField(from: Int, n: Int, code: Int, sweepMs: Long, complete: Boolean): Field {
+    val g = 4
+    val az = FloatArray(n) { (from + it + 0.5f) % 360f }
+    val order = (0 until n).sortedBy { az[it] }
+    val ac = FloatArray(n) { az[order[it]] }
+    return Field(Product.REF, "KTLX", sweepMs, sweepMs, 0.5f, n, g, 2f, 0.25f, 2f, 66f,
+        ac, FloatArray(n) { ac[it] - 0.5f }, FloatArray(n) { ac[it] + 0.5f },
+        ByteArray(n * g) { code.toByte() }, null, 0f, 0f, 0f, complete)
+}
+
+private fun overPrevious() {
+    val prev = sweepField(0, 360, 100, 1000L, true)
+    val part = sweepField(90, 180, 200, 2000L, false)          // scanned 90°..270° so far
+    val m = part.overlaidOn(prev) ?: throw AssertionError("not combined")
+    ok(m.nRays == 360, "every degree covered once, got ${m.nRays}")
+    ok(!m.complete && m.sweepMs == 2000L, "keeps the new sweep's identity")
+    ok((1 until m.nRays).all { m.azCenter[it] >= m.azCenter[it - 1] }, "rays sorted by azimuth")
+    ok(m.code(m.azCenter.indices.first { m.azCenter[it] > 180f }, 0) == 200, "new data where scanned")
+    ok(m.code(m.azCenter.indices.first { m.azCenter[it] > 300f }, 0) == 100, "previous data elsewhere")
+    ok(m.sample(10.0, 2.5)?.value == (100 - 66f) / 2f, "sample in the old part")
+    ok(m.key != part.key, "its own GPU key")
+    val full = sweepField(0, 360, 200, 3000L, false)
+    ok(full.overlaidOn(prev) == null, "nothing to fill: keep the sweep as is")
 }

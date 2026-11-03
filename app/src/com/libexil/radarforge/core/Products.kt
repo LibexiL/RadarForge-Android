@@ -151,6 +151,45 @@ class Field(
         return if (codes8 != null) codes8[i].toInt() and 0xff else codes16!![i].code
     }
 
+    /**
+     * This sweep (still being scanned) drawn over [prev], the same tilt's last complete sweep: the rays scanned
+     * so far, and [prev]'s rays where the antenna hasn't been yet, so the panel never shows a blank wedge.
+     * Null when the two can't be combined (different gates, encoding or product).
+     */
+    fun overlaidOn(prev: Field): Field? {
+        if (prev.product != product || prev.nRays == 0 || nRays == 0) return null
+        if ((codes8 == null) != (prev.codes8 == null) || prev.scale != scale || prev.offset != offset) return null
+        if (Math.abs(prev.firstGate - firstGate) > 0.01f || Math.abs(prev.gateSpacing - gateSpacing) > 0.001f) return null
+        val bins = 720                                         // half-degree bins covered by this sweep's rays
+        val covered = BooleanArray(bins)
+        for (r in 0 until nRays) {
+            val span = ((azHi[r] - azLo[r]) % 360f + 360f) % 360f
+            var a = 0f
+            while (a <= span) { covered[((((azLo[r] + a) % 360f + 360f) % 360f) * 2f).toInt() % bins] = true; a += 0.5f }
+        }
+        val fill = (0 until prev.nRays).filter { !covered[(((prev.azCenter[it] % 360f + 360f) % 360f) * 2f).toInt() % bins] }
+        if (fill.isEmpty()) return null
+        // (source, ray) pairs sorted by azimuth: 0 = this sweep, 1 = the previous one
+        val rows = ((0 until nRays).map { 0 to it } + fill.map { 1 to it })
+            .sortedBy { (src, r) -> if (src == 0) azCenter[r] else prev.azCenter[r] }
+        val n = rows.size
+        val g = nGates
+        val ac = FloatArray(n); val lo = FloatArray(n); val hi = FloatArray(n)
+        val c8 = if (codes8 != null) ByteArray(n * g) else null
+        val c16 = if (codes16 != null) CharArray(n * g) else null
+        for ((i, row) in rows.withIndex()) {
+            val (src, r) = row
+            val f = if (src == 0) this else prev
+            ac[i] = f.azCenter[r]; lo[i] = f.azLo[r]; hi[i] = f.azHi[r]
+            val k = minOf(g, f.nGates)
+            if (c8 != null) System.arraycopy(f.codes8!!, r * f.nGates, c8, i * g, k)
+            else System.arraycopy(f.codes16!!, r * f.nGates, c16!!, i * g, k)
+        }
+        return Field(product, site, volumeMs, sweepMs, elevation, n, g, firstGate, gateSpacing, scale, offset,
+            ac, lo, hi, c8, c16, nyquist, stormU, stormV, false,
+            (if (variant.isEmpty()) "" else "$variant+") + "over${prev.sweepMs}")
+    }
+
     class Sample(val value: Float, val rangeFolded: Boolean, val slantKm: Double, val heightKm: Double, val azimuth: Double)
 
     /** Value at azimuth (deg) / ground distance (km) from the radar, or null outside the data. */

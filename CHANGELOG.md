@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.9.1 – 2026-11-02
+
+* **A pen for drawing on the map.** Tap the ruler, then **Pen**: one finger draws, two fingers still move and zoom
+  the map. Six colours and three widths, undo and clear. Drawings are kept in map coordinates, so they stay on the
+  storm you circled when you zoom, pan or switch radar, and they're still there after a restart.
+* **No more half-drawn radar.** While a sweep is still being scanned, the part the antenna hasn't reached yet shows
+  the previous sweep at that tilt instead of a blank wedge.
+* **Back from another app, the radar catches up at once:** the scans that finished while the app was in the
+  background are loaded straight away, so a panel showing the previous volume (velocity before the scan reaches it,
+  for example) isn't left on an old one.
+
 ## 1.9.0 – 2026-10-21
 
 * **Warnings come in as fast as possible.**

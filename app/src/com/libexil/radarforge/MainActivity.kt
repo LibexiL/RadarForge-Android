@@ -823,6 +823,10 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     private lateinit var toolCard: LinearLayout
     private lateinit var toolDistChip: W.Chip
     private lateinit var toolTrackChip: W.Chip
+    private lateinit var toolPenChip: W.Chip
+    private lateinit var toolPenRow: LinearLayout
+    private lateinit var penWidthChip: W.Chip
+    private val penSwatches = ArrayList<Pair<Int, View>>()
     private lateinit var toolText: TextView
     private lateinit var toolTrackRow: LinearLayout
     private lateinit var toolTrackScroll: HorizontalScrollView
@@ -838,9 +842,11 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         toolDistChip = W.chip(this, "Distance") { overlay.setTool(OverlayView.Tool.DISTANCE) }
         toolTrackChip = W.chip(this, "Storm track") { overlay.setTool(OverlayView.Tool.TRACK) }
         row.addView(toolDistChip, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dpi(6f) })
-        row.addView(toolTrackChip, LinearLayout.LayoutParams(-2, -2))
+        row.addView(toolTrackChip, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dpi(6f) })
+        toolPenChip = W.chip(this, "Pen") { overlay.setTool(OverlayView.Tool.PEN) }
+        row.addView(toolPenChip, LinearLayout.LayoutParams(-2, -2))
         row.addView(W.weightSpace(this))
-        row.addView(W.iconButton(this, Icon.UNDO, "Undo the last point") { overlay.undoTool() })
+        row.addView(W.iconButton(this, Icon.UNDO, "Undo the last point or stroke") { overlay.undoTool() })
         row.addView(W.iconButton(this, Icon.TRASH, "Clear") { overlay.clearTool() })
         row.addView(W.iconButton(this, Icon.CLOSE, "Close the measuring tools") { closeTools() })
         toolCard.addView(row, LinearLayout.LayoutParams(-1, -2))
@@ -865,6 +871,40 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         }, LinearLayout.LayoutParams(-2, -2))
         toolTrackScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(toolTrackRow); visibility = View.GONE }
         toolCard.addView(toolTrackScroll, LinearLayout.LayoutParams(-1, -2))
+
+        // the pen: colours and line width
+        toolPenRow = W.hRow(this).apply { setPadding(0, dpi(2f), 0, dpi(4f)); visibility = View.GONE }
+        for (col in PEN_COLORS) {
+            val sw = View(this).apply {
+                isClickable = true
+                contentDescription = "Pen colour"
+                setOnClickListener { prefs.penColor = col; this@MainActivity.overlay.penColor = col; refreshPenRow() }
+            }
+            penSwatches.add(col to sw)
+            toolPenRow.addView(sw, LinearLayout.LayoutParams(dpi(30f), dpi(30f)).apply { rightMargin = dpi(8f) })
+        }
+        penWidthChip = W.chip(this, "") {
+            val i = PEN_WIDTHS.indexOfFirst { abs(it.first - prefs.penWidth) < 0.01f }
+            val next = PEN_WIDTHS[(i + 1) % PEN_WIDTHS.size].first
+            prefs.penWidth = next; overlay.penWidthDp = next; refreshPenRow()
+        }
+        toolPenRow.addView(W.weightSpace(this))
+        toolPenRow.addView(penWidthChip, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dpi(6f) })
+        toolCard.addView(toolPenRow, LinearLayout.LayoutParams(-1, -2))
+        overlay.penColor = prefs.penColor
+        overlay.penWidthDp = prefs.penWidth
+        overlay.setPenText(prefs.penStrokes)
+        overlay.onPenChanged = { prefs.penStrokes = overlay.penText(); onToolChanged() }
+        refreshPenRow()
+    }
+
+    private fun refreshPenRow() {
+        for ((col, v) in penSwatches) {
+            val on = col == prefs.penColor
+            v.background = rounded(col, dp(15f), if (on) C.text else Themes.withAlpha(0xff000000.toInt(), 0x66), dpi(if (on) 3f else 1f))
+            v.scaleX = if (on) 1.08f else 1f; v.scaleY = v.scaleX
+        }
+        penWidthChip.text = PEN_WIDTHS.firstOrNull { abs(it.first - prefs.penWidth) < 0.01f }?.second ?: "Medium"
     }
 
     private fun openTools() {
@@ -874,6 +914,12 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         overlay.setTool(lastTool)
         if (overlay.trackMinutes != prefs.trackMinutes) overlay.setTrackMinutes(prefs.trackMinutes)
         onToolChanged()
+    }
+
+    /** Opens the tools with the pen picked (from "what's new"). */
+    fun openPen() {
+        lastTool = OverlayView.Tool.PEN
+        if (overlay.tool == OverlayView.Tool.NONE) openTools() else overlay.setTool(OverlayView.Tool.PEN)
     }
 
     fun closeTools() {
@@ -891,6 +937,8 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         val t = overlay.tool
         toolDistChip.selectedState = t == OverlayView.Tool.DISTANCE
         toolTrackChip.selectedState = t == OverlayView.Tool.TRACK
+        toolPenChip.selectedState = t == OverlayView.Tool.PEN
+        toolPenRow.visibility = if (t == OverlayView.Tool.PEN) View.VISIBLE else View.GONE
         toolBtn.setTint(if (t != OverlayView.Tool.NONE) C.accent else C.text)
         toolTrackScroll.visibility = if (t == OverlayView.Tool.TRACK && overlay.trackA != null) View.VISIBLE else View.GONE
         toolMinutesChip.text = "${overlay.trackMinutes} min"
@@ -900,8 +948,15 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         toolText.text = when (t) {
             OverlayView.Tool.DISTANCE -> distanceText()
             OverlayView.Tool.TRACK -> trackText()
+            OverlayView.Tool.PEN -> penText()
             OverlayView.Tool.NONE -> ""
         }
+    }
+
+    private fun penText(): String {
+        val n = overlay.penStrokes.size
+        return "Draw on the map with one finger · two fingers move and zoom\n" +
+            if (n == 0) "Drawings stay on the map until you clear them" else "$n drawing${if (n == 1) "" else "s"} · stays when you close the tools"
     }
 
     private fun distanceText(): String {
@@ -1334,7 +1389,7 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             val ts = tiltsOf(live)
             val i = Tilts.closest(ts, angle)
             if (i >= 0 && abs(ts[i].elevation - angle) < 0.3f) {
-                fieldOf(live, ts[i], p)?.let { return Pick(it, if (!it.complete) "scanning…" else null) }
+                fieldOf(live, ts[i], p)?.let { return Pick(if (it.complete) it else overPrevious(it, complete, p), if (!it.complete) "scanning…" else null) }
             }
         }
         if (complete != null) {
@@ -1347,6 +1402,20 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             return Pick(null, "${p.short} not available at this tilt")
         }
         return Pick(null, "loading…")
+    }
+
+    /** A sweep still being scanned, drawn over the same tilt of the last complete volume (no blank wedge). */
+    private fun overPrevious(f: Field, complete: Volume?, p: Product): Field {
+        if (complete == null || complete.startMs >= f.volumeMs) return f
+        val ts = tiltsOf(complete)
+        val i = Tilts.closest(ts, f.elevation)
+        if (i < 0 || abs(ts[i].elevation - f.elevation) > 0.3f) return f
+        val prev = fieldOf(complete, ts[i], p) ?: return f
+        val key = "over|${f.key}|${prev.key}"
+        fieldCache[key]?.let { return it }
+        val m = f.overlaidOn(prev) ?: return f
+        fieldCache[key] = m
+        return m
     }
 
     // ---------------------------------------------------------------- dealiasing and the Σ trail
@@ -2156,7 +2225,11 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         const val REQ_LOCATION_LIVE = 13
         const val REQ_IMPORT_PAL = 21
         /** Bump to show the "what's new" sheet once after an update. */
-        const val WHATS_NEW = "1.9.0"
+        const val WHATS_NEW = "1.9.1"
         private val TRAIL_RE = Regex("trail(\\d+)")
+        /** Pen colours: yellow, red, white, cyan, magenta, green. */
+        val PEN_COLORS = intArrayOf(0xffffd400.toInt(), 0xffff3b30.toInt(), 0xffffffff.toInt(), 0xff4fd8ff.toInt(),
+            0xffff4fd8.toInt(), 0xff4cd964.toInt())
+        val PEN_WIDTHS = listOf(2.5f to "Thin", 3.5f to "Medium", 6f to "Thick")
     }
 }

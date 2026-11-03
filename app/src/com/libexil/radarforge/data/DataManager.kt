@@ -152,9 +152,15 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
         if (loopWanted != null) runLoopJob()
     }
 
+    /** When updates were last stopped (the app went to the background); 0: never. */
+    @Volatile private var stoppedAt = 0L
+
     fun start() {
         if (running) return
         running = true
+        // back after a while: the volumes that finished meanwhile become the "previous volume" again, so a panel
+        // that falls back to it (e.g. velocity before the scan reaches it) isn't left showing a stale scan
+        if (stoppedAt > 0 && System.currentTimeMillis() - stoppedAt > 60_000) filledFor = -1
         startLive()
         startAlerts()
         startFeeds()
@@ -170,6 +176,7 @@ class DataManager(ctx: Context, @Volatile var countyRings: (Int) -> List<FloatAr
 
     fun stop() {
         running = false
+        stoppedAt = System.currentTimeMillis()
         main.removeCallbacks(loopRetry)              // the loop job itself stops at the next scan
         liveTask?.cancel(false); liveTask = null
         alertTask?.cancel(false); alertTask = null

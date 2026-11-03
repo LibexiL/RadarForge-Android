@@ -940,17 +940,12 @@ object Sheets {
         a.prefs.seenWhatsNew = MainActivity.WHATS_NEW
         val col = W.vCol(a)
         checkList(a, col, listOf(
-            "Faster warnings: tornado, severe thunderstorm and flash flood warnings are checked every 10 seconds (was every 90), and also from Iowa State's live feed, which is often a minute ahead of the NWS alert service. Whichever has a new warning first puts it on the map.",
-            "Live radar starts quicker: the app remembers each radar's place in its scans between launches.",
-            "Faster radar downloads: the newest scan shows tilt by tilt as it arrives, and previous scans download several at a time.",
-            "Models: HRRR, NAM 3 km, RAP and GFS maps, like Pivotal Weather – CAPE, helicity, shear, STP, simulated radar, temperature, wind, precipitation, snow and more. Tap Models at the top.",
-            "Winter: precipitation type on the radar (P-Type), the freezing line, snowfall totals, winter storm warnings shaded by county, and snow totals on storm reports.",
-            "Hurricanes: active storms with their cone, track, wind field and coastal warnings, when the winds could reach you, model tracks, the tropical outlook, buoys, rainfall totals, past storms and the storms that passed near you.",
-            "Layers is tidier: Severe, Winter and Tropical each have their own page with a one-tap setup, their switches, and buttons that open their model maps.",
-            "Share a picture of the map has moved to Settings.",
+            "A pen: draw on the map to mark a storm, a hook or where you are going. Tap the ruler, then Pen. One finger draws, two fingers move and zoom. Pick a colour and width, undo or clear. Drawings stay where you put them when you zoom, switch radar or restart the app.",
+            "No more half-drawn radar: while a new sweep is still being scanned, the part the radar hasn't reached yet shows the previous sweep instead of a blank wedge.",
+            "Back from another app: the radar catches up to the newest scans straight away, so a panel showing the previous volume isn't left on an old one.",
         ))
         val buttons = W.hRow(a)
-        buttons.addView(W.button(a, "Try Models") { a.sheets.close(); a.setViewMode("models") }, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = a.dpi(8f) })
+        buttons.addView(W.button(a, "Try the pen") { a.sheets.close(); a.openPen() }, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = a.dpi(8f) })
         buttons.addView(W.button(a, "Got it", primary = true) { a.sheets.close() }, LinearLayout.LayoutParams(0, -2, 1f))
         col.addView(buttons, lp(top = a.dpi(14f)))
         a.sheets.show("New in RadarForge ${MainActivity.WHATS_NEW}", col)

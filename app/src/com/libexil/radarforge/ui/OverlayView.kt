@@ -59,7 +59,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         fun onInspect(km: FloatArray?, panel: Int)
     }
 
-    enum class Tool { NONE, DISTANCE, TRACK }
+    enum class Tool { NONE, DISTANCE, TRACK, PEN }
 
     /** A text label on the map at a km position (SPC outlook risk names). */
     class MapLabel(val text: String, val color: Int, val x: Float, val y: Float)
@@ -127,9 +127,147 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
     /** Time of the scan shown in the active panel (storm-track times count from it). */
     var dataTimeMs = 0L
 
+    // ---------------------------------------------------------------- the pen
+    /** One finger draws a stroke; a second finger cancels it and pans / zooms instead. */
+    private fun penTouch(e: MotionEvent) {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                penTwoFinger = false
+                val p = state.panelAt(e.x, e.y)
+                if (p < 0) return
+                penPanel = p
+                penLive.clear()
+                val km = state.toKm(p, e.x, e.y)
+                penLive.add(km[0]); penLive.add(km[1])
+                penLastX = e.x; penLastY = e.y
+                penDrawing = true
+                scroller.forceFinished(true)
+            }
+            MotionEvent.ACTION_MOVE -> if (penDrawing && e.pointerCount == 1) {
+                if (hypot(e.x - penLastX, e.y - penLastY) >= 2.5f * density) {
+                    val km = state.toKm(penPanel, e.x, e.y)
+                    penLive.add(km[0]); penLive.add(km[1])
+                    penLastX = e.x; penLastY = e.y
+                    invalidate()
+                }
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                penTwoFinger = true
+                if (penDrawing) { penDrawing = false; penLive.clear(); invalidate() }
+            }
+            MotionEvent.ACTION_UP -> if (penDrawing) {
+                penDrawing = false
+                commitPenStroke()
+            }
+            MotionEvent.ACTION_CANCEL -> { penDrawing = false; penLive.clear(); invalidate() }
+        }
+    }
+
+    private fun commitPenStroke() {
+        val p = proj
+        if (p == null || penLive.isEmpty()) { penLive.clear(); invalidate(); return }
+        if (penLive.size == 2) { penLive.add(penLive[0] + 0.01f); penLive.add(penLive[1]) }   // a tap: a dot
+        val n = penLive.size / 2
+        val ll = DoubleArray(n * 2)
+        for (k in 0 until n) {
+            val g = p.inverse(penLive[2 * k].toDouble(), penLive[2 * k + 1].toDouble())
+            ll[2 * k] = g[0]; ll[2 * k + 1] = g[1]
+        }
+        penStrokes.add(PenStroke(ll, penColor, penWidthDp))
+        penLive.clear()
+        invalidate()
+        onPenChanged?.invoke()
+    }
+
+    private fun penKmOf(st: PenStroke, p: Geo.Aeqd): FloatArray {
+        if (penKmProj !== p) { penKm.clear(); penKmProj = p }
+        return penKm.getOrPut(st) {
+            val n = st.ll.size / 2
+            FloatArray(n * 2).also { out -> for (k in 0 until n) p.forward(st.ll[2 * k], st.ll[2 * k + 1], out, 2 * k) }
+        }
+    }
+
+    private fun strokePath(r: RectF, km: FloatArray, count: Int) {
+        penPath.rewind()
+        if (count < 2) return
+        penPath.moveTo(state.toScreenX(r, km[0]), state.toScreenY(r, km[1]))
+        var k = 2
+        while (k + 1 < count) {
+            val x = state.toScreenX(r, km[k]); val y = state.toScreenY(r, km[k + 1])
+            if (k + 3 < count) {          // smooth: curve through the midpoints
+                val nx = state.toScreenX(r, km[k + 2]); val ny = state.toScreenY(r, km[k + 3])
+                penPath.quadTo(x, y, (x + nx) / 2, (y + ny) / 2)
+            } else penPath.lineTo(x, y)
+            k += 2
+        }
+    }
+
+    private fun drawPen(c: Canvas, r: RectF) {
+        if (penStrokes.isEmpty() && penLive.isEmpty()) return
+        val p = proj
+        // drawings scale a little with the zoom so they keep matching what was circled, within limits
+        val zoomF = (state.scale / 1.5f).coerceIn(0.6f, 1.6f).let { Math.sqrt(it.toDouble()).toFloat() }
+        fun stroke(km: FloatArray, count: Int, color: Int, w: Float) {
+            strokePath(r, km, count)
+            penPaint.color = 0x99000000.toInt()
+            penPaint.strokeWidth = (w + 2.2f) * density * zoomF
+            c.drawPath(penPath, penPaint)
+            penPaint.color = color
+            penPaint.strokeWidth = w * density * zoomF
+            c.drawPath(penPath, penPaint)
+        }
+        if (p != null) for (st in penStrokes) { val km = penKmOf(st, p); stroke(km, km.size, st.color, st.widthDp) }
+        if (penLive.size >= 2) {
+            val km = FloatArray(penLive.size) { penLive[it] }
+            val pts = if (km.size == 2) floatArrayOf(km[0], km[1], km[0] + 0.01f, km[1]) else km
+            stroke(pts, pts.size, penColor, penWidthDp)
+        }
+    }
+
+    /** Saved form: "color,width,lat,lon,lat,lon…" per stroke, strokes separated by ";". */
+    fun penText(): String = penStrokes.joinToString(";") { st ->
+        buildString {
+            append(st.color); append(','); append(st.widthDp)
+            for (v in st.ll) { append(','); append(String.format(java.util.Locale.US, "%.5f", v)) }
+        }
+    }
+
+    fun setPenText(text: String) {
+        penStrokes.clear(); penKm.clear()
+        for (part in text.split(';')) {
+            val f = part.split(',')
+            if (f.size < 6) continue
+            try {
+                val ll = DoubleArray((f.size - 2) / 2 * 2) { f[2 + it].toDouble() }
+                penStrokes.add(PenStroke(ll, f[0].toInt(), f[1].toFloat()))
+            } catch (_: NumberFormatException) {}
+        }
+        invalidate()
+    }
+
     // ---------------------------------------------------------------- measuring tools
     var tool = Tool.NONE
         private set
+
+    // ---- the pen: freehand drawings kept in latitude/longitude, so they stay put across radars and zooms
+    class PenStroke(val ll: DoubleArray, val color: Int, val widthDp: Float)
+    val penStrokes = ArrayList<PenStroke>()
+    var penColor = 0xffffd400.toInt()
+    var penWidthDp = 3.5f
+    /** Called when a stroke is added or removed (to save them). */
+    var onPenChanged: (() -> Unit)? = null
+    private val penKm = java.util.IdentityHashMap<PenStroke, FloatArray>()
+    private var penKmProj: Geo.Aeqd? = null
+    private val penLive = ArrayList<Float>()          // the stroke being drawn, km x,y pairs
+    private var penPanel = -1
+    private var penDrawing = false
+    private var penTwoFinger = false
+    private var penLastX = 0f
+    private var penLastY = 0f
+    private val penPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+    }
+    private val penPath = Path()
     /** Distance tool points (km). */
     val ruler = ArrayList<FloatArray>()
     /** Storm track: the storm now (A) and after [trackMinutes] (B), km. */
@@ -212,6 +350,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
 
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
             if (inspectDragging) return true
+            if (tool == Tool.PEN && e2.pointerCount < 2) return true      // one finger draws; two pan
             state.panBy(-dx, -dy)
             if (!scaledInGesture && e2.pointerCount == 1 && hypot(dx, dy) > 0.5f) callbacks?.onUserMovedMap()
             moved()
@@ -220,6 +359,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
 
         override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
             if (inspectDragging || scaledInGesture) return true
+            if (tool == Tool.PEN && !penTwoFinger) return true
             flingX = 0; flingY = 0
             scroller.fling(0, 0, vx.toInt(), vy.toInt(), -100_000, 100_000, -100_000, 100_000)
             postInvalidateOnAnimation()
@@ -229,7 +369,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         override fun onDoubleTap(e: MotionEvent): Boolean = true
 
         override fun onDoubleTapEvent(e: MotionEvent): Boolean {
-            if (e.actionMasked == MotionEvent.ACTION_UP && !scaledInGesture) {
+            if (e.actionMasked == MotionEvent.ACTION_UP && !scaledInGesture && tool != Tool.PEN) {
                 val fx = e.x
                 val fy = e.y                     // the event object is reused after this call
                 val i = state.panelAt(fx, fy).coerceAtLeast(0)
@@ -244,6 +384,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         }
 
         override fun onLongPress(e: MotionEvent) {
+            if (tool == Tool.PEN) return
             val i = state.panelAt(e.x, e.y)
             if (i < 0) return
             inspectPanel = i
@@ -328,7 +469,8 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
         trackTwoFingerTap(e)
-        if (tool != Tool.NONE && !inspectDragging && handleDrag(e)) return true
+        if (tool == Tool.PEN) penTouch(e)
+        else if (tool != Tool.NONE && !inspectDragging && handleDrag(e)) return true
         if (inspectDragging) {
             when (e.actionMasked) {
                 MotionEvent.ACTION_MOVE -> {
@@ -437,6 +579,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         when (tool) {
             Tool.DISTANCE -> ruler.clear()
             Tool.TRACK -> { trackA = null; trackB = null; trackEtas = emptyList() }
+            Tool.PEN -> if (penStrokes.isNotEmpty()) { penStrokes.clear(); penKm.clear(); onPenChanged?.invoke() }
             Tool.NONE -> {}
         }
         invalidate()
@@ -447,6 +590,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         when (tool) {
             Tool.DISTANCE -> if (ruler.isNotEmpty()) ruler.removeAt(ruler.size - 1)
             Tool.TRACK -> { trackA = null; trackB = null; trackEtas = emptyList() }
+            Tool.PEN -> if (penStrokes.isNotEmpty()) { penKm.remove(penStrokes.removeAt(penStrokes.size - 1)); onPenChanged?.invoke() }
             Tool.NONE -> {}
         }
         invalidate()
@@ -509,7 +653,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
                 trackStartMs = if (dataTimeMs > 0) dataTimeMs else System.currentTimeMillis()
                 updateTrack()
             }
-            Tool.NONE -> {}
+            Tool.PEN, Tool.NONE -> {}
         }
     }
 
@@ -529,7 +673,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
         when (tool) {
             Tool.DISTANCE -> for (k in ruler.indices.reversed()) test(k, ruler[k])
             Tool.TRACK -> { test(HANDLE_B, trackB); test(HANDLE_A, trackA) }
-            Tool.NONE -> {}
+            Tool.PEN, Tool.NONE -> {}
         }
         return best
     }
@@ -633,10 +777,11 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
             drawChasers(c, r)
             for (d in decor) if (!d.below) d.draw(c, r, state, density)
             drawLocation(c, r)
+            drawPen(c, r)
             when (tool) {
                 Tool.DISTANCE -> drawRuler(c, r)
                 Tool.TRACK -> drawTrack(c, r)
-                Tool.NONE -> {}
+                Tool.PEN, Tool.NONE -> {}
             }
             val info = panels.getOrNull(i)
             if (info != null) {
