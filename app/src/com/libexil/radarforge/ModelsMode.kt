@@ -37,7 +37,16 @@ class ModelsMode(private val a: MainActivity) {
     private val main = Handler(Looper.getMainLooper())
     // maps for the screen (3 at once: a field's own downloads run in parallel on Models.io), and a separate
     // single worker that looks ahead, so looking ahead never holds up what you asked for
-    private val exec = Executors.newFixedThreadPool(3) { r -> Thread(r, "rf-models").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 } }
+    private val exec = java.util.concurrent.ThreadPoolExecutor(3, 3, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+        java.util.concurrent.PriorityBlockingQueue<Runnable>()) { r -> Thread(r, "rf-models").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 } }
+    private val jobSeq = java.util.concurrent.atomic.AtomicLong()
+
+    /** A map job: the hour on screen first (priority 0), then the nearest hours; same priority, oldest first. */
+    private inner class Job(val prio: Int, val body: () -> Unit) : Runnable, Comparable<Job> {
+        val seq = jobSeq.incrementAndGet()
+        override fun run() = body()
+        override fun compareTo(other: Job) = if (prio != other.prio) prio.compareTo(other.prio) else seq.compareTo(other.seq)
+    }
     private val ahead = Executors.newSingleThreadExecutor { r -> Thread(r, "rf-models-ahead").apply { isDaemon = true; priority = Thread.MIN_PRIORITY + 1 } }
     private val p get() = a.prefs
 
@@ -53,7 +62,7 @@ class ModelsMode(private val a: MainActivity) {
         if (geo?.region == name || geoLoading == name) return
         val bm = a.basemap ?: return
         geoLoading = name
-        exec.execute {
+        exec.execute(Job(-1) {
             val (lat, lon, w) = Models.REGIONS.getValue(name)
             val proj = Geo.Aeqd(lat, lon)
             val reach = w * 0.85
@@ -67,7 +76,7 @@ class ModelsMode(private val a: MainActivity) {
                 pictures.clear()
                 if (active) { applyOverlayGeo(); fitRegion(); request() }
             }
-        }
+        })
     }
 
     // ---------------------------------------------------------------- runs
@@ -91,7 +100,7 @@ class ModelsMode(private val a: MainActivity) {
         if (!force && runs[m.id] != null && System.currentTimeMillis() - (runsTime[m.id] ?: 0L) < 8 * 60_000L) return
         runsLoading.add(m.id)
         updateBar()
-        exec.execute {
+        exec.execute(Job(-1) {
             val r = try { Models.latestRuns(m, 4) } catch (e: Exception) { RfLog.w("model runs: $e"); null }
             main.post {
                 runsLoading.remove(m.id)
@@ -100,7 +109,7 @@ class ModelsMode(private val a: MainActivity) {
                 clampHour()
                 if (active) { request(); updateBar() }
             }
-        }
+        })
     }
 
     /** Keeps the forecast hour inside what the run has. */
@@ -197,7 +206,14 @@ class ModelsMode(private val a: MainActivity) {
         val refTable = a.palettes.table("REF")
         pending.add(key)
         a.runOnUiThread { updateBar() }
-        exec.execute {
+        val hrs = r.hours
+        fun dist() = Math.abs(hrs.indexOf(fh) - hrs.indexOf(p.modelFh)).let { if (fh == p.modelFh) 0 else it }
+        exec.execute(Job(dist()) {
+            // looking ahead for an hour you've already moved away from: drop it
+            if (dist() > 3 || !active || model().id != m.id) {
+                main.post { pending.remove(key) }
+                return@Job
+            }
             val pic = try { make(key, m, r.timeMs, fh, fid, g, refTable, r.hours) } catch (e: Throwable) {
                 val msg = when (e) {
                     is Models.Unavailable -> e.message ?: "not available"
@@ -213,7 +229,7 @@ class ModelsMode(private val a: MainActivity) {
                 Models.prune()
                 if (active) { a.rebuild(); updateBar(); request() }
             }
-        }
+        })
     }
 
     private fun make(key: String, m: Models.ModelDef, run: Long, fh: Int, fid: String, g: ModelGeo,

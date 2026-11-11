@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.2 – 2026-11-11
+
+* **The hour on screen always goes first.** Model maps used to queue first come, first served, so after a few quick
+  steps the hour you were looking at waited behind maps for hours you had already left. Now the hour on screen
+  jumps the queue, the nearest hours follow, and look-ahead for hours you've moved away from is dropped.
+
 ## 1.10.1 – 2026-11-11
 
 **Model maps open and step much faster.**
