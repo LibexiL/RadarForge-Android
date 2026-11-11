@@ -35,7 +35,10 @@ import java.util.concurrent.Executors
  */
 class ModelsMode(private val a: MainActivity) {
     private val main = Handler(Looper.getMainLooper())
-    private val exec = Executors.newFixedThreadPool(2) { r -> Thread(r, "rf-models").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 } }
+    // maps for the screen (3 at once: a field's own downloads run in parallel on Models.io), and a separate
+    // single worker that looks ahead, so looking ahead never holds up what you asked for
+    private val exec = Executors.newFixedThreadPool(3) { r -> Thread(r, "rf-models").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 } }
+    private val ahead = Executors.newSingleThreadExecutor { r -> Thread(r, "rf-models-ahead").apply { isDaemon = true; priority = Thread.MIN_PRIORITY + 1 } }
     private val p get() = a.prefs
 
     // ---------------------------------------------------------------- the map for a region
@@ -80,6 +83,11 @@ class ModelsMode(private val a: MainActivity) {
     fun refreshRuns(force: Boolean = false) {
         val m = model()
         if (m.id in runsLoading) return
+        if (runs[m.id] == null) {
+            // the list found last time: the first map starts now, while the newest runs are looked up
+            val known = Models.cachedRuns(m)
+            if (known.isNotEmpty()) { runs[m.id] = known; clampHour(); if (active) request() }
+        }
         if (!force && runs[m.id] != null && System.currentTimeMillis() - (runsTime[m.id] ?: 0L) < 8 * 60_000L) return
         runsLoading.add(m.id)
         updateBar()
@@ -137,9 +145,50 @@ class ModelsMode(private val a: MainActivity) {
         val hrs = r.hours
         val i = hrs.indexOf(fh)
         if (i >= 0 && fields.all { keyOf(it, fh)?.let { k -> k in pictures || k in errors } == true }) {
-            for (d in 1..2) hrs.getOrNull(i + d)?.let { h -> for (f in fields) want(f, h) }
+            // the map is up: the hours either side get made too, so stepping doesn't wait
+            for (d in intArrayOf(1, -1, 2)) hrs.getOrNull(i + d)?.let { h -> for (f in fields) want(f, h) }
+            lookFurther(r, fh, fields, hrs, i)
         }
     }
+
+    private var aheadToken: String? = null
+
+    /** Downloads (no drawing) the next two hours after those, the hour indexes around this one, and after a
+     *  moment on the same hour, the other fields of the same kind (Wi-Fi only: that's a lot of data). */
+    private fun lookFurther(r: Models.Run, fh: Int, fields: List<String>, hrs: List<Int>, i: Int) {
+        val m = model()
+        val token = "${m.id}/${r.timeMs}/$fh/${fields.joinToString(",")}"
+        if (token == aheadToken) return
+        aheadToken = token
+        fun still() = active && aheadToken == token
+        for (d in 3..4) hrs.getOrNull(i + d)?.let { h ->
+            for (f in fields) ahead.execute { if (still()) try { Models.fetchInputs(m.id, r.timeMs, h, f) } catch (_: Exception) {} }
+        }
+        ahead.execute {
+            for (h in hrs) if (Math.abs(h - fh) <= 6 && still()) try { Models.idx(m, r.timeMs, h) } catch (_: Exception) {}
+        }
+        main.removeCallbacks(groupTick)
+        if (!metered()) main.postDelayed(groupTick, 1500L)
+    }
+
+    private val groupTick = Runnable {
+        val token = aheadToken ?: return@Runnable
+        val r = run() ?: return@Runnable
+        val m = model()
+        val fh = p.modelFh
+        val fields = p.modelFields.take(p.modelPanels)
+        if ("${m.id}/${r.timeMs}/$fh/${fields.joinToString(",")}" != token) return@Runnable
+        val groups = fields.mapNotNull { Models.FIELDS[it]?.group }.toSet()
+        val others = Models.FIELDS.values.filter { it.group in groups && it.id !in fields && it.accum == null }.take(10)
+        for (fd in others) ahead.execute {
+            if (active && aheadToken == token) try { Models.fetchInputs(m.id, r.timeMs, fh, fd.id) } catch (_: Exception) {}
+        }
+    }
+
+    private fun metered(): Boolean = try {
+        val cm = a.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        cm.isActiveNetworkMetered
+    } catch (_: Exception) { true }
 
     private fun want(fid: String, fh: Int) {
         val key = keyOf(fid, fh) ?: return
@@ -566,5 +615,5 @@ class ModelsMode(private val a: MainActivity) {
 
     fun runsFor(id: String) = runs[id] ?: emptyList()
 
-    fun shutdown() { exec.shutdownNow() }
+    fun shutdown() { exec.shutdownNow(); ahead.shutdownNow() }
 }

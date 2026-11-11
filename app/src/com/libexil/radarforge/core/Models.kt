@@ -19,6 +19,21 @@ object Models {
     const val HOUR = 3_600_000L
     const val MS2KT = 1.943844f
 
+    /** Downloads and decodes run here, several at once (a field's inputs, the run search). Only leaf jobs
+     *  go on it, never anything that waits on it, so it can't deadlock. */
+    val io: java.util.concurrent.ExecutorService = java.util.concurrent.Executors.newFixedThreadPool(6) { r ->
+        Thread(r, "rf-model-io").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 }
+    }
+
+    /** Runs [jobs] on [io] and returns their results in order (rethrows the first failure). */
+    private fun <T> parallel(jobs: List<() -> T>): List<T> {
+        if (jobs.size <= 1) return jobs.map { it() }
+        val fs = jobs.map { j -> io.submit(java.util.concurrent.Callable { j() }) }
+        return fs.map { f ->
+            try { f.get() } catch (e: java.util.concurrent.ExecutionException) { throw (e.cause ?: e) }
+        }
+    }
+
     class ModelDef(val id: String, val name: String, val long: String, val bucket: String, val cycleEvery: Int,
                    val resKm: Float, val delayH: Float) {
         private fun ymd(ms: Long) = fmt("yyyyMMdd").format(java.util.Date(ms))
@@ -180,21 +195,47 @@ object Models {
         return l.objects.filter { it.key.endsWith(".idx") }.mapNotNull { m.fhOf(it.key) }.filter { it in allowed }.distinct().sorted()
     }
 
-    /** The newest runs that have at least their first hours, newest first. */
+    /** Lists one run's hours (swapped in by the tests). */
+    var lister: (ModelDef, Long) -> List<Int> = { m, r -> listRun(m, r) }
+
+    /** The newest runs that have at least their first hours, newest first. Every candidate cycle is listed
+     *  at once: one round trip instead of up to ten in a row. */
     fun latestRuns(m: ModelDef, count: Int = 3, now: Long = System.currentTimeMillis()): List<Run> {
         var t = now / HOUR * HOUR
         t -= ((t / HOUR) % m.cycleEvery) * HOUR
-        val out = ArrayList<Run>()
-        var tries = 0
-        while (out.size < count && tries < count + 6) {
-            tries++
-            if (t <= now - (m.delayH * 0.25f * HOUR).toLong()) {
-                val hrs = try { listRun(m, t) } catch (_: Exception) { emptyList() }
-                if (hrs.isNotEmpty() && 0 in hrs) out.add(Run(t, hrs))
-            }
+        val cands = ArrayList<Long>()
+        repeat(count + 6) {
+            if (t <= now - (m.delayH * 0.25f * HOUR).toLong()) cands.add(t)
             t -= m.cycleEvery * HOUR
         }
+        val found = parallel(cands.map { c -> { try { lister(m, c) } catch (_: Exception) { null } } })
+        if (cands.isNotEmpty() && found.all { it == null }) throw java.io.IOException("couldn't reach ${m.bucket}")
+        val out = cands.zip(found).filter { (_, h) -> h != null && h.isNotEmpty() && 0 in h }.map { (c, h) -> Run(c, h!!) }.take(count)
+        if (out.isNotEmpty()) saveRuns(m, out)
         return out
+    }
+
+    /** The run list found last time, kept on disk: a model opens straight away while it's looked up again. */
+    fun cachedRuns(m: ModelDef, maxAgeMs: Long = 12 * HOUR): List<Run> {
+        val f = File(cacheDir ?: return emptyList(), "runs_${m.id}.txt")
+        if (!f.exists() || System.currentTimeMillis() - f.lastModified() > maxAgeMs) return emptyList()
+        return try {
+            f.readLines().mapNotNull { line ->
+                val parts = line.split(' ')
+                if (parts.size < 2) null
+                else Run(parts[0].toLong(), parts[1].split(',').filter { it.isNotEmpty() }.map { it.toInt() })
+            }
+        } catch (_: Exception) { emptyList() }
+    }
+
+    fun saveRuns(m: ModelDef, runs: List<Run>) {
+        val dir = cacheDir ?: return
+        try {
+            dir.mkdirs()
+            val tmp = File(dir, "runs_${m.id}.part")
+            tmp.writeText(runs.joinToString("\n") { "${it.timeMs} ${it.hours.joinToString(",")}" })
+            tmp.renameTo(File(dir, "runs_${m.id}.txt"))
+        } catch (_: Exception) {}
     }
 
     // ---------------------------------------------------------------- the field catalog
@@ -497,27 +538,44 @@ object Models {
 
     private val WIND_PAIRS = listOf("u" to "v", "u5" to "v5", "u10" to "v10", "su" to "sv")
 
+    /** The turn from grid to earth axes at each point of a Lambert grid (the last grid's, kept). */
+    private var rotation: Triple<String, FloatArray, FloatArray>? = null
+
+    private fun rotationOf(g: Grib2.Grid, l: Grib2.Lcc): Pair<FloatArray, FloatArray> {
+        val k = "${g.ni}x${g.nj}/${g.la1}/${g.lo1}/${l.lov}/${l.n}"
+        rotation?.let { if (it.first == k) return it.second to it.third }
+        val ca = FloatArray(g.ni * g.nj); val sa = FloatArray(g.ni * g.nj)
+        val ll = DoubleArray(2)
+        for (j in 0 until g.nj) {
+            var c = 0f; var s = 0f
+            for (i in 0 until g.ni) {
+                if (i % 8 == 0) {
+                    g.latLon(j.toDouble(), (i + 4).toDouble(), ll)
+                    val a = l.n * Math.toRadians(((ll[1] - l.lov + 540.0) % 360.0) - 180.0)
+                    c = cos(a).toFloat(); s = sin(a).toFloat()
+                }
+                ca[j * g.ni + i] = c; sa[j * g.ni + i] = s
+            }
+        }
+        rotation = Triple(k, ca, sa)
+        return ca to sa
+    }
+
     /** Grid-relative Lambert winds -> east / north. */
     fun earthWinds(g: Grib2.Grid, u: FloatArray, v: FloatArray): Pair<FloatArray, FloatArray> {
         val l = g.lcc ?: return u to v
         if (!l.uvGrid) return u to v
+        val (ca, sa) = synchronized(this) { rotationOf(g, l) }
         val eu = FloatArray(u.size); val ev = FloatArray(v.size)
-        val ll = DoubleArray(2)
-        for (j in 0 until g.nj) for (i in 0 until g.ni) {
-            if (i % 8 == 0) g.latLon(j.toDouble(), (i + 4).toDouble(), ll)
-            val a = l.n * Math.toRadians(((ll[1] - l.lov + 540.0) % 360.0) - 180.0)
-            val ca = cos(a).toFloat(); val sa = sin(a).toFloat()
-            val k = j * g.ni + i
-            eu[k] = ca * u[k] + sa * v[k]
-            ev[k] = -sa * u[k] + ca * v[k]
+        for (k in u.indices) {
+            eu[k] = ca[k] * u[k] + sa[k] * v[k]
+            ev[k] = -sa[k] * u[k] + ca[k] * v[k]
         }
         return eu to ev
     }
 
-    fun compute(modelId: String, run: Long, fh: Int, fid: String): ModelField {
-        val m = MODELS.getValue(modelId)
-        val fd = FIELDS.getValue(fid)
-        val rows = idx(m, run, fh)
+    /** The first recipe this hour's index can feed, with its inputs; or null and why not. */
+    private fun pick(m: ModelDef, fd: FieldDef, rows: List<IdxEntry>, fh: Int): Pair<Recipe?, Any> {
         var lastErr: String? = null
         for (rec in fd.recipes) {
             val picks = LinkedHashMap<String, IdxEntry>()
@@ -539,8 +597,37 @@ object Models {
                 }
                 picks[key] = hit
             }
-            if (!ok) continue
-            val grids = picks.mapValues { decoded(m, run, fh, it.value) }
+            if (ok) return rec to picks
+        }
+        return null to (lastErr ?: "${fd.name} isn't available from ${m.name}")
+    }
+
+    /** Downloads (to the disk cache, without decoding) what a field needs for one hour: for looking ahead.
+     *  Returns how many pieces. Running totals aren't fetched ahead. */
+    fun fetchInputs(modelId: String, run: Long, fh: Int, fid: String): Int {
+        val m = MODELS.getValue(modelId)
+        val fd = FIELDS.getValue(fid)
+        if (fd.accum != null) return 0
+        val (rec, picks) = pick(m, fd, idx(m, run, fh), fh)
+        if (rec == null) return 0
+        @Suppress("UNCHECKED_CAST")
+        val entries = (picks as Map<String, IdxEntry>).values.toList()
+        parallel(entries.map { e -> { message(m, run, fh, e); Unit } })
+        return entries.size
+    }
+
+    fun compute(modelId: String, run: Long, fh: Int, fid: String): ModelField {
+        val m = MODELS.getValue(modelId)
+        val fd = FIELDS.getValue(fid)
+        val rows = idx(m, run, fh)
+        val (rec0, found) = pick(m, fd, rows, fh)
+        var lastErr: String? = found as? String
+        for (rec in listOfNotNull(rec0)) {
+            @Suppress("UNCHECKED_CAST")
+            val picks = found as Map<String, IdxEntry>
+            // every input downloaded and decoded at the same time
+            val got = parallel(picks.values.map { e -> { decoded(m, run, fh, e) } })
+            val grids = picks.keys.zip(got).toMap()
             val g0 = grids.values.first()
             if (grids.values.any { it.values.size != g0.values.size }) throw Unavailable("the inputs are on different grids")
             val d = HashMap<String, FloatArray>()

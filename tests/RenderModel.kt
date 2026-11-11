@@ -23,7 +23,10 @@ fun main(args: Array<String>) {
         val name = Regex("""f(\d\d)\.grib2(\.idx)?$""").find(url.replace("wrfsfcf", "f"))!!
         val f = File(dir, "f${name.groupValues[1]}" + (if (name.groupValues[2].isNotEmpty()) ".idx" else ".grib2"))
         val bytes = f.readBytes()
-        if (a < 0) bytes else bytes.copyOfRange(a.toInt(), if (b < 0) bytes.size else b.toInt() + 1)
+        val got = if (a < 0) bytes else bytes.copyOfRange(a.toInt(), if (b < 0) bytes.size else b.toInt() + 1)
+        // RF_LAT=150: a simulated connection, 150 ms per request and 8 MB/s
+        System.getenv("RF_LAT")?.toLongOrNull()?.let { Thread.sleep(it + got.size / 8_000L) }
+        got
     }
     val run = Time.parseIso("2026-10-15T12:00:00Z")
     val (lat, lon, wd) = Models.REGIONS.getValue(region)

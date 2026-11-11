@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.10.1 – 2026-11-11
+
+**Model maps open and step much faster.**
+
+* **A field's inputs download and decode at the same time** instead of one after another: STP (six inputs),
+  shear, winds and the upper-air maps come up in about half the time.
+* **Opening a model is quicker:** every candidate run is looked up at once (instead of up to ten in a row), and the
+  run list is remembered, so the newest known run starts drawing straight away while it's refreshed.
+* **Stepping hours:** once a map is up, the hour before is made as well as the next two, the two after those are
+  downloaded, and the index files of the nearby hours fetched, on their own worker so they never hold up the map
+  you asked for.
+* **Switching fields:** on Wi-Fi, after a moment on the same hour, the other fields of the same kind (Severe,
+  Surface…) are downloaded in the background. Not on mobile data.
+* The wind-direction correction for each model grid is worked out once instead of for every wind map.
+
 ## 1.10.0 – 2026-11-02
 
 **A cleaner, map-first look with pop-out menus.**

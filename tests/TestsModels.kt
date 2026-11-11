@@ -20,6 +20,7 @@ fun registerModels() {
     Extra.all.add("GRIB2: MRMS png / simple / bitmap" to ::gribMrms)
     Extra.all.add("GRIB2: Lambert round trip" to ::lccRoundTrip)
     Extra.all.add("models: index files and keys" to ::idxParse)
+    Extra.all.add("models: run search in parallel, remembered on disk" to ::runSearch)
     Extra.all.add("models: computed fields (fake run)" to ::computeFields)
     Extra.all.add("models: accumulation buckets" to ::buckets)
     Extra.all.add("models: colours and values" to ::colours)
@@ -183,4 +184,33 @@ private fun colours() {
     ok(Models.fmtValue(Models.FIELDS.getValue("pwat"), 1.234f) == "1.23 in", "pwat text")
     ok(Models.FIELDS.size == 30 && Models.FIELDS.values.all { it.group in Models.GROUPS }, "30 fields in 4 groups")
     for (fd2 in Models.FIELDS.values) ok(fd2.stops != null || fd2.palette != null, "${fd2.id} has colours")
+}
+
+private fun runSearch() {
+    val dir = java.io.File(System.getProperty("java.io.tmpdir"), "rf-runs-${System.nanoTime()}").apply { mkdirs() }
+    val oldDir = Models.cacheDir; val oldLister = Models.lister
+    Models.cacheDir = dir
+    try {
+        val now = Models.fmt("yyyyMMddHHmm").parse("202611111340")!!.time
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        Models.lister = { _, run ->
+            calls.incrementAndGet()
+            Thread.sleep(250)                                               // one S3 listing
+            if (Models.fmt("HH").format(java.util.Date(run)) == "13") emptyList() else (0..18).toList()
+        }
+        val t = System.nanoTime()
+        val runs = Models.latestRuns(Models.MODELS.getValue("hrrr"), 4, now)
+        val took = (System.nanoTime() - t) / 1e9
+        ok(runs.map { Models.fmt("HH").format(java.util.Date(it.timeMs)) } == listOf("12", "11", "10", "09"), "newest runs ${runs.map { it.timeMs }}")
+        ok(calls.get() >= 5 && took < 0.9, "${calls.get()} listings took $took s (should run at once)")
+        val back = Models.cachedRuns(Models.MODELS.getValue("hrrr"))
+        ok(back.map { it.timeMs } == runs.map { it.timeMs } && back[0].hours == (0..18).toList(), "remembered on disk")
+        ok(Models.cachedRuns(Models.MODELS.getValue("gfs")).isEmpty(), "nothing remembered for another model")
+        Models.lister = { _, _ -> throw java.io.IOException("offline") }
+        val failed = try { Models.latestRuns(Models.MODELS.getValue("rap"), 4, now); false } catch (_: java.io.IOException) { true }
+        ok(failed, "no connection is an error, not 'no runs'")
+    } finally {
+        Models.cacheDir = oldDir; Models.lister = oldLister
+        dir.deleteRecursively()
+    }
 }
