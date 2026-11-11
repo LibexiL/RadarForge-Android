@@ -21,6 +21,7 @@ fun registerModels() {
     Extra.all.add("GRIB2: Lambert round trip" to ::lccRoundTrip)
     Extra.all.add("models: index files and keys" to ::idxParse)
     Extra.all.add("models: run search in parallel, remembered on disk" to ::runSearch)
+    Extra.all.add("models: neighbouring pieces in one request" to ::coalesce)
     Extra.all.add("models: computed fields (fake run)" to ::computeFields)
     Extra.all.add("models: accumulation buckets" to ::buckets)
     Extra.all.add("models: colours and values" to ::colours)
@@ -211,6 +212,32 @@ private fun runSearch() {
         ok(failed, "no connection is an error, not 'no runs'")
     } finally {
         Models.cacheDir = oldDir; Models.lister = oldLister
+        dir.deleteRecursively()
+    }
+}
+
+private fun coalesce() {
+    val dir = java.io.File(System.getProperty("java.io.tmpdir"), "rf-coal-${System.nanoTime()}").apply { mkdirs() }
+    val oldDir = Models.cacheDir; val oldFetch = Models.fetcher
+    Models.cacheDir = dir
+    try {
+        val rows = Models.parseIdx("1:0:d=2026111100:CAPE:surface:2 hour fcst:\n" +
+            "2:1000:d=2026111100:UGRD:10 m above ground:2 hour fcst:\n" +
+            "3:1600:d=2026111100:VGRD:10 m above ground:2 hour fcst:\n" +
+            "4:2200:d=2026111100:REFC:entire atmosphere:2 hour fcst:\n" +
+            "5:9000000:d=2026111100:TMP:2 m above ground:2 hour fcst:\n")
+        val blob = ByteArray(10_240_000) { (it and 0xff).toByte() }
+        val calls = ArrayList<Pair<Long, Long>>()
+        Models.fetcher = { _, a, b -> synchronized(calls) { calls.add(a to b) }; blob.copyOfRange(a.toInt(), if (b < 0) blob.size else b.toInt() + 1) }
+        val m = Models.MODELS.getValue("hrrr")
+        val n = Models.fetchEntries(m, 0L, 2, listOf(rows[1], rows[2], rows[4]))
+        ok(n == 2 && calls.sortedBy { it.first } == listOf(1000L to 2199L, 9000000L to -1L), "two requests: $calls")
+        ok(Models.message(m, 0L, 2, rows[1]).contentEquals(blob.copyOfRange(1000, 1600)), "U from the cache, byte-exact")
+        ok(Models.message(m, 0L, 2, rows[2]).contentEquals(blob.copyOfRange(1600, 2200)), "V from the cache")
+        ok(Models.message(m, 0L, 2, rows[4]).contentEquals(blob.copyOfRange(9000000, blob.size)), "the far piece")
+        ok(calls.size == 2 && Models.fetchEntries(m, 0L, 2, listOf(rows[1], rows[2])) == 0, "nothing fetched twice")
+    } finally {
+        Models.cacheDir = oldDir; Models.fetcher = oldFetch
         dir.deleteRecursively()
     }
 }

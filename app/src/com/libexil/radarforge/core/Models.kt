@@ -20,17 +20,70 @@ object Models {
     const val MS2KT = 1.943844f
 
     /** Downloads and decodes run here, several at once (a field's inputs, the run search). Only leaf jobs
-     *  go on it, never anything that waits on it, so it can't deadlock. */
+     *  go on it, never anything that waits on it, so it can't deadlock. The look-ahead has its own, smaller
+     *  pool, so its requests waiting for the screen's never hold up the screen's. */
     val io: java.util.concurrent.ExecutorService = java.util.concurrent.Executors.newFixedThreadPool(6) { r ->
         Thread(r, "rf-model-io").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 }
     }
+    val ioBg: java.util.concurrent.ExecutorService = java.util.concurrent.Executors.newFixedThreadPool(2) { r ->
+        Thread(r, "rf-model-io-bg").apply { isDaemon = true; priority = Thread.MIN_PRIORITY + 1 }
+    }
 
-    /** Runs [jobs] on [io] and returns their results in order (rethrows the first failure). */
+    /** Set in a thread that works ahead (hours you haven't stepped to yet): its downloads wait while any
+     *  download for the screen is in flight, so what you asked for always has the whole connection. */
+    private val bgFlag = ThreadLocal<Boolean>()
+    val isBackground: Boolean get() = bgFlag.get() == true
+    fun <T> inBackground(f: () -> T): T {
+        val old = bgFlag.get()
+        bgFlag.set(true)
+        try { return f() } finally { bgFlag.set(old) }
+    }
+
+    // who's downloading, and how much (for the status line)
+    private val dlLock = Object()
+    private var fgInFlight = 0
+    @Volatile var bytesDownloaded = 0L
+        private set
+    @Volatile var requests = 0L
+        private set
+
+    private fun gated(bg: Boolean, get: () -> ByteArray): ByteArray {
+        synchronized(dlLock) {
+            if (bg) { while (fgInFlight > 0) (dlLock as Object).wait(100) } else fgInFlight++
+        }
+        try {
+            val d = get()
+            synchronized(dlLock) { bytesDownloaded += d.size; requests++ }
+            return d
+        } finally {
+            if (!bg) synchronized(dlLock) { fgInFlight--; (dlLock as Object).notifyAll() }
+        }
+    }
+
+    /** Runs [jobs] in parallel on the pool for this thread's priority and returns their results in order
+     *  (rethrows the first failure); keeps the priority flag. */
     private fun <T> parallel(jobs: List<() -> T>): List<T> {
         if (jobs.size <= 1) return jobs.map { it() }
-        val fs = jobs.map { j -> io.submit(java.util.concurrent.Callable { j() }) }
+        val bg = isBackground
+        val pool = if (bg) ioBg else io
+        val fs = jobs.map { j -> pool.submit(java.util.concurrent.Callable { if (bg) inBackground(j) else j() }) }
         return fs.map { f ->
             try { f.get() } catch (e: java.util.concurrent.ExecutionException) { throw (e.cause ?: e) }
+        }
+    }
+
+    /** Opens [n] connections to the model's bucket ahead of the first download (DNS, TCP and TLS, all at
+     *  once, instead of in front of the first map). They're kept alive for the real requests. */
+    fun warmConnections(m: ModelDef, n: Int = 3) {
+        val url = "https://${m.bucket}.s3.amazonaws.com/"
+        for (i in 0 until n) io.execute {
+            try {
+                val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                c.requestMethod = "HEAD"; c.connectTimeout = 8000; c.readTimeout = 8000
+                c.setRequestProperty("User-Agent", Net.userAgent)
+                c.responseCode
+                c.inputStream?.close()
+            } catch (_: Exception) {}
         }
     }
 
@@ -127,19 +180,26 @@ object Models {
     /** Swapped in by the tests: (url, start, end) -> bytes; start < 0 means the whole file. */
     var fetcher: (String, Long, Long) -> ByteArray = { url, a, b -> if (a < 0) Net.getBytes(url, 60_000) else Net.getRange(url, a, b) }
 
+    private fun have(name: String): Boolean = cacheDir?.let { File(it, name).length() > 0 } ?: false
+
+    private fun store(name: String, data: ByteArray) {
+        val dir = cacheDir ?: return
+        try {
+            dir.mkdirs()
+            val tmp = File(dir, "$name.${Thread.currentThread().id}.part")
+            tmp.writeBytes(data)
+            tmp.renameTo(File(dir, name))
+        } catch (_: Exception) {}
+    }
+
     private fun cached(name: String, maxAgeMs: Long?, get: () -> ByteArray): ByteArray {
         val dir = cacheDir
         val f = if (dir != null) File(dir, name) else null
         if (f != null && f.length() > 0 && (maxAgeMs == null || System.currentTimeMillis() - f.lastModified() < maxAgeMs)) {
             return try { f.readBytes() } catch (_: Exception) { get() }
         }
-        val data = get()
-        if (f != null) try {
-            dir!!.mkdirs()
-            val tmp = File(dir, "$name.part")
-            tmp.writeBytes(data)
-            tmp.renameTo(f)
-        } catch (_: Exception) {}
+        val data = gated(isBackground, get)
+        store(name, data)
         return data
     }
 
@@ -158,9 +218,42 @@ object Models {
         return parseIdx(String(cached("idx_" + h(m.bucket + key), null) { fetcher(url(m, key), -1, -1) }, Charsets.UTF_8))
     }
 
+    private fun msgName(m: ModelDef, key: String, e: IdxEntry) = "msg_" + h("${m.bucket}/$key/${e.start}/${e.end}")
+
     fun message(m: ModelDef, run: Long, fh: Int, e: IdxEntry): ByteArray {
         val key = m.key(run, fh)
-        return cached("msg_" + h("${m.bucket}/$key/${e.start}/${e.end}"), null) { fetcher(url(m, key), e.start, e.end) }
+        return cached(msgName(m, key, e), null) { fetcher(url(m, key), e.start, e.end) }
+    }
+
+    /** Bytes between two wanted pieces worth downloading to save a round trip. */
+    var coalesceGap = 256_000L
+
+    /** Downloads the pieces of a file a field needs (those not on disk yet) in as few requests as possible:
+     *  pieces next to each other in the file (U and V wind, CAPE and CIN…) come in one range request and
+     *  are then split into the cache. Returns the number of requests. */
+    fun fetchEntries(m: ModelDef, run: Long, fh: Int, entries: List<IdxEntry>): Int {
+        if (cacheDir == null) return 0                  // nowhere to keep the pieces: fetched one by one
+        val key = m.key(run, fh)
+        val todo = entries.filter { !have(msgName(m, key, it)) }.distinctBy { it.start }.sortedBy { it.start }
+        if (todo.isEmpty()) return 0
+        val groups = ArrayList<ArrayList<IdxEntry>>()
+        var cur = arrayListOf(todo[0])
+        for (e in todo.drop(1)) {
+            val last = cur.last()
+            if (last.end >= 0 && e.start - (last.end + 1) in 0..coalesceGap) cur.add(e) else { groups.add(cur); cur = arrayListOf(e) }
+        }
+        groups.add(cur)
+        val bg = isBackground
+        parallel(groups.map { g -> {
+            val a = g.first().start; val b = g.last().end
+            val data = gated(bg) { fetcher(url(m, key), a, b) }
+            for (e in g) {
+                val lo = (e.start - a).toInt()
+                val hi = if (e.end < 0) data.size else (e.end + 1 - a).toInt()
+                if (lo in 0..data.size && hi in lo..data.size) store(msgName(m, key, e), data.copyOfRange(lo, hi))
+            }
+        } })
+        return groups.size
     }
 
     /** Decoded fields kept in memory, up to [gridCells] values in all (an HRRR field is 1.9 million). */
@@ -612,7 +705,7 @@ object Models {
         if (rec == null) return 0
         @Suppress("UNCHECKED_CAST")
         val entries = (picks as Map<String, IdxEntry>).values.toList()
-        parallel(entries.map { e -> { message(m, run, fh, e); Unit } })
+        fetchEntries(m, run, fh, entries)
         return entries.size
     }
 
@@ -625,7 +718,8 @@ object Models {
         for (rec in listOfNotNull(rec0)) {
             @Suppress("UNCHECKED_CAST")
             val picks = found as Map<String, IdxEntry>
-            // every input downloaded and decoded at the same time
+            // every input downloaded (as few requests as possible) and decoded at the same time
+            fetchEntries(m, run, fh, picks.values.toList())
             val got = parallel(picks.values.map { e -> { decoded(m, run, fh, e) } })
             val grids = picks.keys.zip(got).toMap()
             val g0 = grids.values.first()

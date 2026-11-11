@@ -171,13 +171,21 @@ class ModelsMode(private val a: MainActivity) {
         aheadToken = token
         fun still() = active && aheadToken == token
         for (d in 3..4) hrs.getOrNull(i + d)?.let { h ->
-            for (f in fields) ahead.execute { if (still()) try { Models.fetchInputs(m.id, r.timeMs, h, f) } catch (_: Exception) {} }
+            for (f in fields) ahead.execute { if (still()) try { Models.inBackground { Models.fetchInputs(m.id, r.timeMs, h, f) } } catch (_: Exception) {} }
         }
         ahead.execute {
-            for (h in hrs) if (Math.abs(h - fh) <= 6 && still()) try { Models.idx(m, r.timeMs, h) } catch (_: Exception) {}
+            for (h in hrs) if (Math.abs(h - fh) <= 6 && still()) try { Models.inBackground { Models.idx(m, r.timeMs, h) } } catch (_: Exception) {}
         }
         main.removeCallbacks(groupTick)
-        if (!metered()) main.postDelayed(groupTick, 1500L)
+        if (!metered()) {
+            main.postDelayed(groupTick, 2500L)
+            // on Wi-Fi: then the rest of the run for these fields, ahead first (a day of steps), so playing
+            // through it and stepping far never wait on the network
+            val far = (i + 5 until minOf(hrs.size, i + 28)).map { hrs[it] } + (i - 2 downTo maxOf(0, i - 8)).map { hrs[it] }
+            for (h in far) for (f in fields) ahead.execute {
+                if (still() && !metered()) try { Models.inBackground { Models.fetchInputs(m.id, r.timeMs, h, f) } } catch (_: Exception) {}
+            }
+        }
     }
 
     private val groupTick = Runnable {
@@ -214,7 +222,11 @@ class ModelsMode(private val a: MainActivity) {
                 main.post { pending.remove(key) }
                 return@Job
             }
-            val pic = try { make(key, m, r.timeMs, fh, fid, g, refTable, r.hours) } catch (e: Throwable) {
+            val t0 = System.currentTimeMillis(); val b0 = Models.bytesDownloaded
+            val pic = try {
+                if (dist() > 0) Models.inBackground { make(key, m, r.timeMs, fh, fid, g, refTable, r.hours) }
+                else make(key, m, r.timeMs, fh, fid, g, refTable, r.hours)
+            } catch (e: Throwable) {
                 val msg = when (e) {
                     is Models.Unavailable -> e.message ?: "not available"
                     is OutOfMemoryError -> { Models.clearMemory(); "not enough memory – try fewer panels" }
@@ -226,6 +238,10 @@ class ModelsMode(private val a: MainActivity) {
             if (pic != null) main.post {
                 pending.remove(key)
                 pictures[key] = pic
+                if (fh == p.modelFh) {
+                    val mb = (Models.bytesDownloaded - b0) / 1e6; val secs = (System.currentTimeMillis() - t0) / 1000.0
+                    lastLoad = if (mb >= 0.05) String.format(Locale.US, "%.1f MB in %.1f s", mb, secs) else null
+                }
                 Models.prune()
                 if (active) { a.rebuild(); updateBar(); request() }
             }
@@ -357,6 +373,7 @@ class ModelsMode(private val a: MainActivity) {
         geo?.let { applyOverlayGeo() }
         ensureGeo()
         if (geo != null) fitRegion()
+        Models.warmConnections(model())
         refreshRuns()
         bar.visibility = View.VISIBLE
         updateBar()
@@ -423,6 +440,7 @@ class ModelsMode(private val a: MainActivity) {
         errors.clear()
         // the GFS reaches the tropics; the 3 km models only the lower 48
         if (id != "gfs" && p.modelRegion == "Atlantic tropics") p.modelRegion = "CONUS"
+        Models.warmConnections(model())
         refreshRuns()
         clampHour()
         changed()
@@ -617,13 +635,16 @@ class ModelsMode(private val a: MainActivity) {
         a.setModelTitle(m.name, statusLine())
     }
 
+    private var lastLoad: String? = null
+
     fun statusLine(): String {
         val r = run()
         val busy = pending.isNotEmpty() || runsLoading.isNotEmpty()
         return when {
             r == null && runsError != null -> runsError!!
             r == null -> "Finding the newest run…"
-            else -> "${Time.hmZ(r.timeMs).take(2)}Z run · ${geo?.region ?: p.modelRegion}" + if (busy) " · loading…" else ""
+            else -> "${Time.hmZ(r.timeMs).take(2)}Z run · ${geo?.region ?: p.modelRegion}" +
+                (if (busy) " · loading…" else lastLoad?.let { " · $it" } ?: "")
         }
     }
 

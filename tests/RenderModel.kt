@@ -18,7 +18,7 @@ fun main(args: Array<String>) {
     val dir = File(args[0]); val out = File(args[1]).apply { mkdirs() }
     val fh = args[2].toInt(); val region = args[3]
     val fields = args[4].split(",")
-    Models.cacheDir = null
+    Models.cacheDir = System.getenv("RF_CACHE")?.let { File(it).apply { deleteRecursively(); mkdirs() } }
     Models.fetcher = { url, a, b ->
         val name = Regex("""f(\d\d)\.grib2(\.idx)?$""").find(url.replace("wrfsfcf", "f"))!!
         val f = File(dir, "f${name.groupValues[1]}" + (if (name.groupValues[2].isNotEmpty()) ".idx" else ".grib2"))

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.10.3 – 2026-11-11
+
+**Model downloads: fewer round trips, and the map on screen always comes first.**
+
+* Connections to NOAA's bucket are opened when you open Models (or switch model), before the first map needs them.
+* A field's inputs that sit next to each other in the file (U and V wind, CAPE and CIN…) come in one request.
+* Look-ahead downloads wait while anything for the screen is in flight, so stepping never competes with them.
+* On Wi-Fi, the rest of the run (a day of steps ahead) is downloaded at the lowest priority once you're on an
+  hour, so playing through it doesn't wait on the network. Not on mobile data.
+* The status line shows what the last map cost, e.g. "12Z run · CONUS · 2.3 MB in 1.8 s".
+
 ## 1.10.2 – 2026-11-11
 
 * **The hour on screen always goes first.** Model maps used to queue first come, first served, so after a few quick
