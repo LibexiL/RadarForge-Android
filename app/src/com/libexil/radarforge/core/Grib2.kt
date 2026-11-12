@@ -17,7 +17,7 @@ import kotlin.math.tan
 /**
  * A small GRIB2 reader, the same as the desktop app's: regular latitude / longitude (template 3.0) and
  * Lambert conformal (3.30) grids; simple (5.0), complex (5.2), complex with spatial differencing (5.3) and
- * PNG (5.41) packing, with or without a bitmap. JPEG 2000 (5.40) isn't read (NOAA's models don't use it).
+ * PNG (5.41) and JPEG 2000 (5.40, the RAP and NAM) packing, with or without a bitmap.
  */
 object Grib2 {
     class GribException(msg: String) : Exception(msg)
@@ -276,6 +276,11 @@ object Grib2 {
                 val img = Png.decodeGray(dat)
                 if (img.values.size < n) throw GribException("image smaller than the field")
                 for (i in 0 until n) packed[i] = img.values[i].toFloat()
+            }
+            40 -> if (dr.nbits > 0 && dat.isNotEmpty()) {
+                val img = try { Jpx.decode(dat) } catch (e: JpxException) { throw GribException("JPEG 2000: ${e.message}") }
+                if (img.samples.size < n) throw GribException("image smaller than the field")
+                for (i in 0 until n) packed[i] = img.samples[i].toFloat()
             }
             else -> throw GribException("data template 5.${dr.tmpl} isn't supported on the phone")
         }

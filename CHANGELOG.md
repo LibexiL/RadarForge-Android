@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.4 – 2026-11-12
+
+* **RAP and NAM maps work on the phone.** Their fields come JPEG 2000-compressed (GRIB template 5.40), which the
+  phone couldn't read ("data template 5.40 isn't supported on the phone"). The app now has its own JPEG 2000
+  decoder: lossless 5/3 and lossy 9/7 wavelets, tiles, tag trees, the MQ coder. Checked value for value against
+  ECMWF's eccodes and OpenJPEG on full-size fields, with and without bitmaps.
+
 ## 1.10.3 – 2026-11-11
 
 **Model downloads: fewer round trips, and the map on screen always comes first.**

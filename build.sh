@@ -65,6 +65,9 @@ run_tests() {
   [ -f "$OUT/test/tests.jar" ] || die "test build failed"
   say "Running tests"
   java -Xmx2g -cp "$OUT/test/tests.jar:$STDLIB" com.libexil.radarforge.tests.TestsKt "$@"
+  # the JPEG 2000 decoder against eccodes / OpenJPEG reference values
+  java -Xmx2g -cp "$OUT/test/tests.jar:$STDLIB" com.libexil.radarforge.tests.TestJpxKt tests/data/jpx | tail -1 | grep -q "ALL OK" || { echo "JPEG 2000 checks FAILED"; java -Xmx2g -cp "$OUT/test/tests.jar:$STDLIB" com.libexil.radarforge.tests.TestJpxKt tests/data/jpx; exit 1; }
+  echo "JPEG 2000: ALL OK"
 }
 
 build_apk() {
