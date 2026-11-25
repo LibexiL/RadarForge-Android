@@ -10,6 +10,7 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.os.Build
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
@@ -237,7 +238,20 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
     private fun applyTheme() {
         Themes.apply(currentTheme(), prefs.accent)
         try {
+            if (edgeToEdge) {
+                // the map runs under the system bars (Android 11+; required from Android 15): bars see-through,
+                // their icons dark on light themes and light on dark ones
+                @Suppress("DEPRECATION")
+                window.statusBarColor = Color.TRANSPARENT
+                @Suppress("DEPRECATION")
+                window.navigationBarColor = Color.TRANSPARENT
+                window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(C.window))
+                applyBarIcons()
+                return
+            }
+            @Suppress("DEPRECATION")
             window.statusBarColor = C.panel
+            @Suppress("DEPRECATION")
             window.navigationBarColor = C.panel
             window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(C.window))
             @Suppress("DEPRECATION")
@@ -328,6 +342,21 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         stopLiveLocation()
     }
 
+    /**
+     * In the background and Android is short of memory: drop what is quick to make again (cached fields,
+     * derived products, decoded model grids), so the app is less likely to be closed. The radar data stays.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        @Suppress("DEPRECATION")
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
+            RfLog.i("trim memory ($level)")
+            fieldCache.clear()
+            derived.clear()
+            com.libexil.radarforge.core.Models.clearMemory()
+        }
+    }
+
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         // the phone switched between light and dark mode
@@ -344,8 +373,9 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         }
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
+    /** Back closes what's open, one step at a time (pop-out, sheet, inspector, Models, tools, loop);
+     *  with nothing open the app goes to the background. True when back did something in the app. */
+    private fun backStep(): Boolean {
         when {
             pops.isOpen -> pops.close()
             sheets.isOpen -> sheets.close()
@@ -353,8 +383,74 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
             models.active -> setViewMode("radar")
             overlay.tool != OverlayView.Tool.NONE -> closeTools()
             looping -> stopLoop()
-            else -> @Suppress("DEPRECATION") super.onBackPressed()
+            else -> return false
         }
+        return true
+    }
+
+    // Android 13+: the back gesture comes through this callback (Android 16 no longer calls onBackPressed for
+    // apps that target it). Older versions use onBackPressed below.
+    private var backCallback: Any? = null
+
+    private fun registerBack() {
+        if (Build.VERSION.SDK_INT < 33 || backCallback != null) return
+        val cb = android.window.OnBackInvokedCallback { if (!backStep()) moveTaskToBack(true) }
+        onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb)
+        backCallback = cb
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (!backStep()) @Suppress("DEPRECATION") super.onBackPressed()
+    }
+
+    // ---------------------------------------------------------------- edge to edge
+    /** Android 11+: the window reaches under the status and navigation bars (Android 15 requires it). */
+    private val edgeToEdge get() = Build.VERSION.SDK_INT >= 30
+
+    /** The system bars and display cutout (px) the floating bars and cards keep clear of. */
+    private val sysInsets = android.graphics.Rect()
+    private var imeInset = 0
+
+    /** Dark icons in the system bars on light themes, light ones on dark themes (Android 11+). */
+    private fun applyBarIcons() {
+        if (!edgeToEdge) return
+        val light = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+            android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        try { window.insetsController?.setSystemBarsAppearance(if (C.dark) 0 else light, light) } catch (_: Exception) {}
+    }
+
+    private fun setupEdgeToEdge() {
+        if (!edgeToEdge) return
+        window.setDecorFitsSystemWindows(false)
+        applyBarIcons()
+        window.attributes = window.attributes.apply {
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        }
+        root.setOnApplyWindowInsetsListener { _, ins ->
+            val bars = ins.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout())
+            val ime = ins.getInsets(android.view.WindowInsets.Type.ime()).bottom
+            applyInsets(bars.left, bars.top, bars.right, bars.bottom, ime)
+            ins
+        }
+        root.requestApplyInsets()
+    }
+
+    private fun applyInsets(l: Int, t: Int, r: Int, b: Int, ime: Int) {
+        if (sysInsets.left == l && sysInsets.top == t && sysInsets.right == r && sysInsets.bottom == b && imeInset == ime) return
+        sysInsets.set(l, t, r, b)
+        imeInset = ime
+        topBar.setPadding(dpi(10f) + l, dpi(8f) + t, dpi(10f) + r, dpi(4f))
+        bottomBar.setPadding(dpi(10f) + l, 0, dpi(10f) + r, dpi(10f) + b)
+        sheets.setSafeArea(l, t, r, maxOf(b, ime))
+        pops.safe = android.graphics.Rect(l, t, r, b)
+        (locateBtn.layoutParams as? FrameLayout.LayoutParams)?.let { it.rightMargin = dpi(12f) + r; locateBtn.layoutParams = it }
+        for (v in listOf(learnCard, hintCard)) (v.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.leftMargin = dpi(12f) + l; it.rightMargin = dpi(12f) + r; v.layoutParams = it
+        }
+        overlay.insetLeft = l.toFloat()
+        overlay.insetRight = r.toFloat()
+        updateArea()
     }
 
     private fun applyKeepScreenOn() {
@@ -705,6 +801,8 @@ class MainActivity : Activity(), DataManager.Listener, OverlayView.Callbacks {
         sheets = SheetHost(this).apply { elevation = dp(8f) }   // above the bars (elevation 4dp)
         root.addView(sheets, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
+        setupEdgeToEdge()
+        registerBack()
         val relayout = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateArea() }
         root.addOnLayoutChangeListener(relayout)
         topBar.addOnLayoutChangeListener(relayout)

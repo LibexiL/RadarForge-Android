@@ -252,6 +252,9 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
     /** Screen y where the floating top bar ends and the bottom dock starts: labels and legends stay between. */
     var insetTop = 0f
     var insetBottom = Float.MAX_VALUE
+    /** The display cutout / side navigation bar (landscape): labels and legends keep clear of them too. */
+    var insetLeft = 0f
+    var insetRight = 0f
     private val safe = RectF()
 
     // ---- the pen: freehand drawings kept in latitude/longitude, so they stay put across radars and zooms
@@ -791,7 +794,7 @@ class OverlayView(ctx: Context, private val state: MapState) : View(ctx) {
             }
             val info = panels.getOrNull(i)
             if (info != null) {
-                safe.set(r.left, maxOf(r.top, insetTop), r.right, minOf(r.bottom, insetBottom))
+                safe.set(maxOf(r.left, insetLeft), maxOf(r.top, insetTop), minOf(r.right, width - insetRight), minOf(r.bottom, insetBottom))
                 if (safe.height() < 80 * density) safe.set(r)
                 drawHeader(c, safe, info)
                 if (showLegend) { if (info.legend != null) drawStepLegend(c, safe, info.legend) else drawLegend(c, safe, info) }

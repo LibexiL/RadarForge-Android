@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.11.0 – 2026-11-25
+
+**Ready for Android 16, and steadier in the background.**
+
+* The app now targets Android 16 (API 36), which Google Play requires for updates. On Android 15 and 16 the map
+  runs edge to edge, under the status bar and the gesture bar; the top bar, dock, sheets, pop-outs and map labels
+  keep clear of them, of camera cut-outs and of the keyboard.
+* Back works with the predictive back gesture: it closes the open pop-out, sheet, inspector, models, tools or loop
+  in turn, and only then leaves the app.
+* When the app is in the background and Android runs short of memory, it lets go of what's quick to make again
+  (cached fields, derived products, decoded model maps), so it's less likely to be closed. The radar data stays.
+* Build tools updated ahead of GitHub retiring the old versions.
+
 ## 1.10.4 – 2026-11-12
 
 * **RAP and NAM maps work on the phone.** Their fields come JPEG 2000-compressed (GRIB template 5.40), which the

@@ -479,6 +479,28 @@ class ChipGrid(ctx: Context, private val minColDp: Float = 104f, private val gap
 class SheetHost(ctx: Context) : FrameLayout(ctx) {
     private val scrim = View(ctx).apply { setBackgroundColor(0x88000000.toInt()); alpha = 0f }
     private var card: View? = null
+    private var cardCol: View? = null
+    private var cardFull = false
+
+    // The system bars / cutout and the keyboard (px): the sheet's surface reaches the screen's bottom edge, its
+    // contents stay above the navigation bar and the keyboard (the window no longer shrinks for the keyboard
+    // once it draws under the system bars).
+    private var safeTop = 0
+    private var safeBottom = 0
+    private var safeLeft = 0
+    private var safeRight = 0
+
+    fun setSafeArea(left: Int, top: Int, right: Int, bottom: Int) {
+        if (left == safeLeft && top == safeTop && right == safeRight && bottom == safeBottom) return
+        safeLeft = left; safeTop = top; safeRight = right; safeBottom = bottom
+        cardCol?.let { applySafe(it, card?.layoutParams as? LayoutParams, cardFull) }
+    }
+
+    private fun applySafe(col: View, lp: LayoutParams?, fullHeight: Boolean) {
+        col.setPadding(safeLeft, 0, safeRight, safeBottom)
+        if (lp != null && fullHeight) { lp.topMargin = dpi(56f) + safeTop; card?.layoutParams = lp }
+        col.requestLayout()
+    }
     var onClosed: (() -> Unit)? = null
     val isOpen: Boolean get() = card != null
 
@@ -534,11 +556,13 @@ class SheetHost(ctx: Context) : FrameLayout(ctx) {
             override fun onMeasure(w: Int, h: Int) {
                 if (fullHeight) { super.onMeasure(w, h); return }
                 val host = (parent as? View)?.height ?: MeasureSpec.getSize(h)
-                val cap = maxOf((host * 0.80f).toInt(), dpi(260f))
+                val cap = maxOf(((host - safeTop) * 0.80f).toInt() + safeBottom, dpi(260f))
                 super.onMeasure(w, MeasureSpec.makeMeasureSpec(minOf(MeasureSpec.getSize(h), cap), MeasureSpec.AT_MOST))
             }
         }
         wrapper.addView(col, LayoutParams(LayoutParams.MATCH_PARENT, if (fullHeight) LayoutParams.MATCH_PARENT else LayoutParams.WRAP_CONTENT))
+        cardCol = col; cardFull = fullHeight
+        applySafe(col, lp, fullHeight)
         // keep wide screens readable
         val maxW = dpi(620f)
         val hostW = maxOf(width, (parent as? View)?.width ?: 0)
@@ -561,6 +585,7 @@ class SheetHost(ctx: Context) : FrameLayout(ctx) {
     private fun removeCard(immediate: Boolean) {
         val c = card ?: return
         card = null
+        cardCol = null
         if (immediate) {
             removeView(c)
             return

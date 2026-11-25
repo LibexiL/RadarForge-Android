@@ -17,7 +17,7 @@ OUT="$ROOT/build"
 
 VERSION_NAME="$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' app/AndroidManifest.xml | head -1)"
 MIN_SDK=26
-TARGET_SDK=34
+TARGET_SDK=36
 
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -26,7 +26,7 @@ command -v java >/dev/null || die "Java 17 or newer is needed (e.g. sudo dnf ins
 # ---- tools: file name | url | sha256 --------------------------------------------
 TOOL_LIST=(
   "kotlin-compiler-2.1.21.zip|https://github.com/JetBrains/kotlin/releases/download/v2.1.21/kotlin-compiler-2.1.21.zip|1ba08a8b45da99339a0601134cc037b54cf85e9bc0edbe76dcbd27c2d684a977"
-  "android.jar|https://raw.githubusercontent.com/Sable/android-platforms/master/android-34/android.jar|6cea1df3efb77103ac3e2beb9bf4718964b0e0869ab16d39d29d5cbae1c147ad"
+  "android.jar|https://raw.githubusercontent.com/Sable/android-platforms/master/android-36/android.jar|d9eb9da824d9e247a352f570f01e1169e725b2954bca9e283a71786c59b59f9a"
   "apktool_2.12.1.jar|https://github.com/iBotPeaches/Apktool/releases/download/v2.12.1/apktool_2.12.1.jar|66cf4524a4a45a7f56567d08b2c9b6ec237bcdd78cee69fd4a59c8a0243aeafa"
   "jadx-1.5.3.zip|https://github.com/skylot/jadx/releases/download/v1.5.3/jadx-1.5.3.zip|8280f3799c0273fe797a2bcd90258c943e451fd195f13d05400de5e6451d15ec"
   "uber-apk-signer-1.3.0.jar|https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar|e1299fd6fcf4da527dd53735b56127e8ea922a321128123b9c32d619bba1d835"

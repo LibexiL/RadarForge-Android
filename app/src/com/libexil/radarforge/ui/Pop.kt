@@ -29,6 +29,9 @@ class PopHost(ctx: Context) : FrameLayout(ctx) {
         isClickable = true
     }
 
+    /** The system bars / cutout (px): pop-outs stay clear of them. */
+    var safe = android.graphics.Rect()
+
     // this view is GONE (and unmeasured) while no pop-out is open: go by the window it fills
     private fun hostW() = (parent as? View)?.width?.takeIf { it > 0 } ?: width
     private fun hostH() = (parent as? View)?.height?.takeIf { it > 0 } ?: height
@@ -53,7 +56,7 @@ class PopHost(ctx: Context) : FrameLayout(ctx) {
         val c = object : FrameLayout(context) {
             override fun onMeasure(w: Int, h: Int) {
                 // never taller than the space on its side of the button
-                val room = (if (above) anchorTop() else hostH() - anchorBottom()) - dpi(12f)
+                val room = (if (above) anchorTop() - safe.top else hostH() - safe.bottom - anchorBottom()) - dpi(12f)
                 val hs = MeasureSpec.makeMeasureSpec(maxOf(dpi(120f), minOf(room, MeasureSpec.getSize(h))), MeasureSpec.AT_MOST)
                 super.onMeasure(w, hs)
             }
@@ -98,11 +101,11 @@ class PopHost(ctx: Context) : FrameLayout(ctx) {
         val m = dpi(10f)
         val ax = relX(a)
         var x = if (alignEnd) ax + a.width - c.width else ax
-        x = x.coerceIn(m, maxOf(m, width - m - c.width))
+        x = x.coerceIn(m + safe.left, maxOf(m + safe.left, width - m - safe.right - c.width))
         // above: clear of the whole bottom dock, not just the button, so it never covers the dock
         val dockTop = (a.parent as? View)?.let { p -> relY(p) } ?: relY(a)
         var y = if (above) minOf(relY(a), dockTop) - c.height - dpi(8f) else relY(a) + a.height + dpi(8f)
-        y = y.coerceIn(m, maxOf(m, height - m - c.height))
+        y = y.coerceIn(m + safe.top, maxOf(m + safe.top, height - m - safe.bottom - c.height))
         c.x = x.toFloat(); c.y = y.toFloat()
         c.pivotX = (ax + a.width / 2 - x).toFloat().coerceIn(0f, c.width.toFloat())
         c.pivotY = if (above) c.height.toFloat() else 0f
@@ -120,7 +123,7 @@ class PopHost(ctx: Context) : FrameLayout(ctx) {
             val m = dpi(10f)
             val dockTop = (a.parent as? View)?.let { p -> relY(p) } ?: relY(a)
             val y = if (above) minOf(relY(a), dockTop) - c.height - dpi(8f) else relY(a) + a.height + dpi(8f)
-            c.y = y.coerceIn(m, maxOf(m, height - m - c.height)).toFloat()
+            c.y = y.coerceIn(m + safe.top, maxOf(m + safe.top, height - m - safe.bottom - c.height)).toFloat()
         }
     }
 
