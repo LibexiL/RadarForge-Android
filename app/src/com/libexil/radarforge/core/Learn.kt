@@ -23,7 +23,7 @@ object Learn {
         Product.PHI to "Differential phase: builds up through heavy rain. A steady climb along the beam means a lot of " +
             "liquid water; it's mostly used to estimate rainfall.",
         Product.PTYPE to "Precipitation type: reflectivity coloured by what's reaching the ground – green-yellow-red rain, " +
-            "blue snow, orange sleet, pink freezing rain. The type comes from the HRRR model's analysis for the hour of the scan, " +
+            "blue snow, orange sleet, pink freezing rain. The type comes from the HRRR model's newest forecast for the hour of the scan, " +
             "so treat the edges between colours as a few miles uncertain.",
     )
 

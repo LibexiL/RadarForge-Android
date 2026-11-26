@@ -6,8 +6,10 @@ import kotlin.math.sin
 
 /**
  * Winter weather, like the desktop app (radarforge/features/winter.py):
- *  - precipitation type: the HRRR's analysis for the hour of the scan (rain / snow / sleet / freezing rain, or its
- *    2 m temperature where it has no precipitation) colours the radar's own reflectivity: the PTYPE product;
+ *  - precipitation type: the HRRR's newest forecast valid at the hour of the scan (rain / snow / sleet / freezing
+ *    rain; its analysis hour has no precipitation, so no types) colours the radar's own reflectivity: the PTYPE
+ *    product. Where the radar has precipitation the model doesn't, the model's nearest type (within 60 km) is used,
+ *    and beyond that the 2 m wet-bulb temperature decides between snow and rain;
  *  - the freezing line: the HRRR's 32 °F line at 2 m;
  *  - snowfall totals: NOHRSC's gridded snowfall analysis (24 / 48 / 72 h, https://www.nohrsc.noaa.gov/snowfall_v2/);
  *  - rainfall totals: MRMS multi-sensor estimates (24 / 48 / 72 h, for tropical rain).
@@ -45,7 +47,7 @@ object Winter {
     /** The grid if it's already here (no download). */
     fun peek(lat0: Double, lon0: Double, t: Long): SurfaceGrid? = synchronized(grids) { grids[key(lat0, lon0, t)] }
 
-    /** The HRRR surface grid for the hour of [t] around (lat0, lon0): its analysis, else an older run's forecast. Blocking. */
+    /** The HRRR surface grid for the hour of [t] around (lat0, lon0): the newest forecast valid then, the analysis last. Blocking. */
     fun surfaceGrid(lat0: Double, lon0: Double, t: Long): SurfaceGrid? {
         val k = key(lat0, lon0, t)
         synchronized(grids) {
@@ -54,16 +56,21 @@ object Winter {
         }
         val m = Models.MODELS.getValue("hrrr")
         val hour = hourOf(t)
-        for (back in 0 until 4) {
+        // the analysis (0) has no precipitation types, only temperatures: forecasts 1, 2, 3 hours ahead first
+        for (back in intArrayOf(1, 2, 3, 0)) {
             val run = hour - back * Models.HOUR
             val rows = try { Models.idx(m, run, back) } catch (_: Exception) { continue }
             val picks = HashMap<String, Models.IdxEntry>()
-            for ((name, v) in listOf("crain" to "CRAIN", "csnow" to "CSNOW", "cicep" to "CICEP", "cfrzr" to "CFRZR", "t2" to "TMP")) {
-                val lev = if (v == "TMP") "2 m above ground" else "surface"
+            for ((name, v) in listOf("crain" to "CRAIN", "csnow" to "CSNOW", "cicep" to "CICEP", "cfrzr" to "CFRZR",
+                                     "t2" to "TMP", "td2" to "DPT")) {
+                val lev = if (v == "TMP" || v == "DPT") "2 m above ground" else "surface"
                 (Models.findEntry(rows, v, lev, "fcst") ?: Models.findEntry(rows, v, lev, "any"))?.let { picks[name] = it }
             }
             if ("t2" !in picks) continue
-            val g = try { picks.mapValues { Models.decoded(m, run, back, it.value) } } catch (_: Exception) { continue }
+            val g = try {
+                Models.fetchEntries(m, run, back, picks.values.toList())          // neighbours in the file: one request
+                picks.mapValues { Models.decoded(m, run, back, it.value) }
+            } catch (_: Exception) { continue }
             val grid = build(g, lat0, lon0, run + back * Models.HOUR, "HRRR ${Time.hmZ(run).take(2)}Z" + if (back == 0) " analysis" else " +$back h")
             synchronized(grids) { grids[k] = grid }
             return grid
@@ -72,33 +79,94 @@ object Winter {
         return null
     }
 
+    const val REACH_KM = 60f            // how far the model's nearest precipitation type is carried to the radar's echoes
+    const val SNOW_TW_C = 1f            // wet-bulb temperature (°C) at or below which precipitation is taken as snow
+
+    /** 2 m wet-bulb temperature (°C) from temperature and dewpoint (Stull 2011); the temperature without a dewpoint. */
+    fun wetBulbC(tC: Float, tdC: Float = Float.NaN): Float {
+        if (tdC.isNaN()) return tC
+        val t = tC.toDouble(); val td = minOf(tdC, tC).toDouble()
+        fun es(x: Double) = 6.112 * Math.exp(17.62 * x / (243.12 + x))
+        val rh = (100.0 * es(td) / es(t)).coerceIn(5.0, 100.0)
+        val tw = t * Math.atan(0.151977 * Math.sqrt(rh + 8.313659)) + Math.atan(t + rh) - Math.atan(rh - 1.676331) +
+            0.00391838 * Math.pow(rh, 1.5) * Math.atan(0.023101 * rh) - 4.686035
+        return minOf(tw, t).toFloat()
+    }
+
+    /**
+     * Type codes on an n x n grid from 2 m temperature / dewpoint (K, NaN unknown) and the model's flags (0 / 1).
+     * The model's own type where it has precipitation (rising order: rain, snow, sleet, freezing rain; a rain / snow
+     * mix shows as snow); elsewhere its nearest type within [REACH_KM] unless the air plainly disagrees; beyond
+     * that the wet bulb.
+     */
+    fun classify(n: Int, t2: FloatArray, td2: FloatArray?, flags: Map<String, FloatArray>, cellKm: Float): ByteArray {
+        val size = n * n
+        val tw = FloatArray(size) { if (t2[it].isNaN()) 99f else wetBulbC(t2[it] - 273.15f, td2?.get(it)?.minus(273.15f) ?: Float.NaN) }
+        val model = ByteArray(size) { -1 }
+        for ((code, name) in listOf(RAIN to "crain", SNOW to "csnow", SLEET to "cicep", FRZR to "cfrzr")) {
+            val f = flags[name] ?: continue
+            for (i in 0 until size) if (f[i] > 0.5f) model[i] = code.toByte()
+        }
+        // carry the model's types outwards, one cell a step (8 neighbours), up to the reach
+        val near = model.copyOf()
+        var frontier = IntArray(size).let { q -> var m = 0; for (i in 0 until size) if (model[i] >= 0) q[m++] = i; q.copyOf(m) }
+        val steps = (REACH_KM / cellKm).toInt()
+        var step = 0
+        while (frontier.isNotEmpty() && step < steps) {
+            val next = IntArray(minOf(size, frontier.size * 8)); var m = 0
+            for (i in frontier) {
+                val r = i / n; val c = i % n
+                for (dr in -1..1) for (dc in -1..1) {
+                    val rr = r + dr; val cc = c + dc
+                    if (rr < 0 || rr >= n || cc < 0 || cc >= n) continue
+                    val j = rr * n + cc
+                    if (near[j] < 0) { near[j] = near[i]; if (m < next.size) next[m++] = j }
+                }
+            }
+            frontier = next.copyOf(m); step++
+        }
+        val out = ByteArray(size)
+        for (i in 0 until size) {
+            if (t2[i].isNaN()) { out[i] = -1; continue }
+            var code = when {
+                model[i] >= 0 -> model[i].toInt()
+                near[i] >= 0 -> near[i].toInt().let { v ->
+                    when {
+                        v != RAIN && tw[i] > 3f -> RAIN           // frozen types into warm air: rain
+                        v == RAIN && tw[i] < -2f -> SNOW          // rain into cold air: snow
+                        else -> v
+                    }
+                }
+                else -> if (tw[i] <= SNOW_TW_C) SNOW else RAIN
+            }
+            out[i] = code.toByte()
+        }
+        return out
+    }
+
     /** Samples the HRRR fields onto the radar-centred square (also used by the tests). */
     fun build(g: Map<String, Grib2.Grid>, lat0: Double, lon0: Double, validMs: Long, source: String): SurfaceGrid {
         val g0 = g.getValue("t2")
         val proj = Geo.Aeqd(lat0, lon0)
-        val codes = ByteArray(N * N)
-        val t2f = FloatArray(N * N)
+        val size = N * N
+        val idx = IntArray(size)
         val tmp = DoubleArray(2)
         val step = 2 * HALF_KM / N
         for (r in 0 until N) for (c in 0 until N) {
             val ll = proj.inverse((-HALF_KM + (c + 0.5f) * step).toDouble(), (HALF_KM - (r + 0.5f) * step).toDouble())
             g0.index(ll[0], ll[1], tmp)
             val row = Math.round(tmp[0]).toInt(); val col = Math.round(tmp[1]).toInt()
-            val k = r * N + c
-            if (row < 0 || row >= g0.nj || col < 0 || col >= g0.ni) { codes[k] = -1; t2f[k] = Float.NaN; continue }
-            val i = row * g0.ni + col
-            val t = g0.values[i]
-            if (t.isNaN()) { codes[k] = -1; t2f[k] = Float.NaN; continue }
-            // the model's own types in rising order of importance (a rain / snow mix shows as snow)
-            var code = if (t <= 273.15f) SNOW else RAIN
-            fun flag(n: String) = (g[n]?.values?.get(i) ?: 0f) > 0.5f
-            if (flag("crain")) code = RAIN
-            if (flag("csnow")) code = SNOW
-            if (flag("cicep")) code = SLEET
-            if (flag("cfrzr")) code = FRZR
-            codes[k] = code.toByte()
-            t2f[k] = (t - 273.15f) * 1.8f + 32f
+            idx[r * N + c] = if (row < 0 || row >= g0.nj || col < 0 || col >= g0.ni) -1 else row * g0.ni + col
         }
+        fun samp(name: String): FloatArray? {
+            val v = g[name]?.values ?: return null
+            return FloatArray(size) { val i = idx[it]; if (i < 0 || i >= v.size) Float.NaN else v[i] }
+        }
+        val t2 = samp("t2")!!
+        val flags = HashMap<String, FloatArray>()
+        for (n in listOf("crain", "csnow", "cicep", "cfrzr")) samp(n)?.let { flags[n] = it }
+        val codes = classify(N, t2, samp("td2"), flags, step)
+        val t2f = FloatArray(size) { if (t2[it].isNaN()) Float.NaN else (t2[it] - 273.15f) * 1.8f + 32f }
         return SurfaceGrid(codes, t2f, lat0, lon0, validMs, source)
     }
 

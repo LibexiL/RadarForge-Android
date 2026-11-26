@@ -10,6 +10,7 @@ private fun utc(s: String) = Time.parseIso(s)
 
 fun registerWx() {
     Extra.all.add("winter: precipitation type field" to ::ptype)
+    Extra.all.add("winter: type from model, nearest, wet bulb" to ::ptypeClassify)
     Extra.all.add("winter: freezing line and contours" to ::contours)
     Extra.all.add("winter: snowfall listing, rainfall keys" to ::listings)
     Extra.all.add("winter: county-shaded alerts" to ::areaAlerts)
@@ -49,6 +50,26 @@ private fun ptype() {
     ok(sg.code(0f, 0f) == Winter.FRZR, "freezing rain where the model says so: ${sg.code(0f, 0f)}")
     ok(Math.abs(sg.t2(0f, 0f) - ((280f - 273.15f) * 1.8f + 32f)) < 0.01f, "2 m temperature in °F")
     ok(sg.code(0f, 470f) == Winter.SNOW || sg.code(0f, 470f) == -1, "cold air with no precip counts as snow")
+}
+
+private fun ptypeClassify() {
+    ok(Math.abs(Winter.wetBulbC(5f, 5f) - 5f) < 0.3f, "saturated wet bulb = temperature")
+    ok(Winter.wetBulbC(1.7f, -2f) < 0.5f, "35 °F and dry: wet bulb near freezing")
+    val n = 40
+    val t2 = FloatArray(n * n) { 274f }                       // ~33.5 °F everywhere
+    val td = FloatArray(n * n) { 271f }
+    val snow = FloatArray(n * n) { if (it / n < 5 && it % n < 5) 1f else 0f }    // the model snows in one corner
+    var c = Winter.classify(n, t2, td, mapOf("csnow" to snow, "crain" to FloatArray(n * n)), 2f)
+    ok(c[0].toInt() == Winter.SNOW && c[10 * n + 10].toInt() == Winter.SNOW, "model snow, and carried to nearby echoes")
+    ok(c[n * n - 1].toInt() == Winter.SNOW, "beyond reach at 33.5 °F and dry: the wet bulb says snow")
+    val warm = FloatArray(n * n) { 280f }
+    c = Winter.classify(n, warm, FloatArray(n * n) { 279f }, mapOf("csnow" to snow), 2f)
+    ok(c[0].toInt() == Winter.SNOW && c[10 * n + 10].toInt() == Winter.RAIN && c[n * n - 1].toInt() == Winter.RAIN,
+        "model snow isn't carried into 45 °F air")
+    val fz = FloatArray(n * n) { if (it == 20 * n + 20) 1f else 0f }
+    c = Winter.classify(n, FloatArray(n * n) { 271f }, null, mapOf("cfrzr" to fz), 2f)
+    ok(c[22 * n + 22].toInt() == Winter.FRZR, "freezing rain carried nearby")
+    ok(Winter.classify(2, FloatArray(4) { Float.NaN }, null, emptyMap(), 2f)[0].toInt() == -1, "no temperature: unknown")
 }
 
 private fun contours() {
